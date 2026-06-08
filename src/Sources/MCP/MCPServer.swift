@@ -1,29 +1,27 @@
 import Foundation
 import MCP
 
-/// Stdio MCP server. Exposes the PRD's tool set 1:1 backed by `ImsgClient`.
+/// MCP service backed by `ImsgClient`. Same tool surface regardless of
+/// transport — the menu bar app boots one of these on a
+/// `StatelessHTTPServerTransport` (reachable via the Cloudflare Tunnel),
+/// and `ImsgRelay --mcp` boots a second instance on a `StdioTransport`
+/// for local Claude Desktop integration.
 ///
-/// Invoked when the user (or an automation wrapper) launches the binary
-/// with the `--mcp` flag, e.g.:
+/// The MCP server identifier stays as the kebab-case "imsg-relay"
+/// because that's a machine-readable name baked into client configs.
 ///
-///     ssh user@mac '/Applications/iMessage Relay.app/Contents/MacOS/ImsgRelay --mcp'
-///
-/// That matches the integration pattern OpenClaw uses for `imsg rpc`
-/// over SSH, so the same wrappers users have already built for `imsg`
-/// keep working after a path swap. The MCP server identifier stays
-/// as the kebab-case "imsg-relay" because that's a machine-readable
-/// name baked into client configs (Claude Desktop, etc).
-///
-/// The menu bar app does *not* spawn this server — they're two distinct
-/// process modes on the same binary. Keeping them isolated avoids
-/// fighting macOS over stdio while the GUI is up.
+/// Stdio and HTTP modes run as two distinct process modes on the same
+/// binary — keeping the menu bar app off stdio avoids fighting macOS
+/// for stdin/stdout while the GUI is up.
 @MainActor
 final class MCPService {
     private let imsg: ImsgClient
     private let server: Server
+    private let transport: any Transport
 
-    init(imsg: ImsgClient) {
+    init(imsg: ImsgClient, transport: any Transport) {
         self.imsg = imsg
+        self.transport = transport
         self.server = Server(
             name: "imsg-relay",
             version: Self.versionString(),
@@ -33,7 +31,7 @@ final class MCPService {
 
     func run() async throws {
         await registerTools()
-        try await server.start(transport: StdioTransport())
+        try await server.start(transport: transport)
         await server.waitUntilCompleted()
     }
 

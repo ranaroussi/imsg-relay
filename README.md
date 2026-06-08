@@ -133,6 +133,7 @@ When **Enable Cloudflare Tunnel** is on, the public `*.trycloudflare.com` URL ro
 | `GET`  | `/history?chat_id=N&limit=N` | Recent messages for a chat |
 | `GET`  | `/search/messages?query=foo&match=contains` | Full-text search |
 | `POST` | `/send` | Send a text message |
+| `POST` | `/mcp`  | MCP JSON-RPC endpoint (see "MCP server" below) |
 
 `POST /send` body:
 
@@ -150,13 +151,51 @@ Pass `chat_id` instead of `to` to send to an existing group. `service` can be `a
 
 ## MCP server
 
-Run the binary with `--mcp` to serve stdio MCP:
+iMessage Relay speaks MCP over two transports — same tool surface either way. The HTTP transport is the primary path; stdio is preserved for local Claude Desktop.
+
+### HTTP (default, reachable via Cloudflare Tunnel)
+
+The menu bar app boots an MCP server on a `StatelessHTTPServerTransport` (from the official [`modelcontextprotocol/swift-sdk`](https://github.com/modelcontextprotocol/swift-sdk)) and exposes it as `POST /mcp` on the same Hummingbird server that serves the REST API. With the Cloudflare Tunnel enabled, your remote AI agents reach it through the public `*.trycloudflare.com` URL with the same bearer token you use for the REST API.
+
+```bash
+curl -sS -X POST "$TUNNEL_URL/mcp" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+Calling a tool:
+
+```bash
+curl -sS -X POST "$TUNNEL_URL/mcp" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":2,
+    "method":"tools/call",
+    "params":{
+      "name":"imsg_list_chats",
+      "arguments":{"limit":10}
+    }
+  }'
+```
+
+This is the stateless variant of the [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http): one POST per JSON-RPC request, one JSON response back. No SSE, no session header to manage — just bearer auth and a JSON body.
+
+`Origin` header validation is disabled on this transport since tunnel traffic legitimately arrives from arbitrary external clients; the bearer token is what gates access.
+
+### Stdio (for local Claude Desktop)
+
+Run the same binary with `--mcp` to expose MCP over stdin/stdout instead:
 
 ```bash
 /Applications/iMessage\ Relay.app/Contents/MacOS/ImsgRelay --mcp
 ```
 
-This bypasses AppKit and the menu bar entirely — pure JSON-RPC over stdin/stdout. Same binary, different process mode.
+This bypasses AppKit entirely — pure JSON-RPC, no GUI, no menu bar. Different process mode on the same binary.
 
 Wire it into Claude Desktop's `claude_desktop_config.json`:
 
@@ -171,7 +210,16 @@ Wire it into Claude Desktop's `claude_desktop_config.json`:
 }
 ```
 
-Tools exposed:
+For remote stdio via SSH:
+
+```bash
+#!/usr/bin/env bash
+exec ssh -T mac '/Applications/iMessage Relay.app/Contents/MacOS/ImsgRelay --mcp'
+```
+
+### Tools exposed
+
+Both transports surface the same seven tools, all backed by the same `ImsgClient`:
 
 - `imsg_list_chats` — recent chats, paged
 - `imsg_get_chat` — chat info + participants by id
@@ -180,15 +228,6 @@ Tools exposed:
 - `imsg_send_message` — text send
 - `imsg_send_attachment` — file send
 - `imsg_get_status` — config + tunnel state
-
-> **Note on remote MCP:** the official Swift MCP SDK does not yet ship an HTTP/SSE server transport (see [modelcontextprotocol/swift-sdk#165](https://github.com/modelcontextprotocol/swift-sdk/issues/165)), so MCP today is stdio-only and meant to be invoked locally or via an SSH wrapper:
->
-> ```bash
-> #!/usr/bin/env bash
-> exec ssh -T mac '/Applications/iMessage Relay.app/Contents/MacOS/ImsgRelay --mcp'
-> ```
->
-> Once the SDK lands HTTP server transport, the same `MCPService` will mount on the Cloudflare Tunnel alongside the REST API. See "Roadmap" below.
 
 ---
 
@@ -261,7 +300,8 @@ All three prompts come from macOS itself. The app sits idle until they are grant
 | SQLite retry queue with backoff + dead-letter | ✅ Shipping |
 | Cloudflare Tunnel supervisor + live URL surfacing | ✅ Shipping |
 | MCP stdio server (7 tools) | ✅ Shipping |
-| MCP HTTP/SSE server transport | ⏳ Blocked on upstream `modelcontextprotocol/swift-sdk` |
+| MCP HTTP server transport (tunnel-reachable) | ✅ Shipping (stateless `POST /mcp`) |
+| MCP HTTP/SSE streaming + sessions | 🚧 Out of scope for v0 (tools don't need server-initiated push) |
 | Sparkle 2 auto-updates | ✅ Wired (needs ED25519 key + appcast.xml in release pipeline) |
 | Developer ID signing + notarization | ✅ Local + CI |
 | Contacts name resolution on inbound events | 🚧 Stubbed |
@@ -273,7 +313,6 @@ All three prompts come from macOS itself. The app sits idle until they are grant
 ## Roadmap
 
 - [ ] `POST /send/attachment` multipart endpoint to round out the REST surface
-- [ ] HTTP/SSE MCP transport once [`swift-sdk#165`](https://github.com/modelcontextprotocol/swift-sdk/issues/165) lands
 - [ ] Generate + ship Sparkle ED25519 keypair, automate `appcast.xml` publication from the release workflow
 - [ ] Contacts framework integration: resolve handles to names on outbound events
 - [ ] Settings → Status tab: live permission detection + buttons that jump to each pane

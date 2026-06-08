@@ -1,4 +1,5 @@
 import Cocoa
+import MCP
 
 // iMessage Relay has two distinct process modes:
 //
@@ -36,7 +37,7 @@ if args.contains("--mcp") {
     let semaphore = DispatchSemaphore(value: 0)
     Task { @MainActor in
         do {
-            let service = MCPService(imsg: imsg)
+            let service = MCPService(imsg: imsg, transport: StdioTransport())
             try await service.run()
         } catch {
             FileHandle.standardError.write(Data("MCP server exited: \(error.localizedDescription)\n".utf8))

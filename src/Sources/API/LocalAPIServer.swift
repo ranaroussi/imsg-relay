@@ -1,5 +1,7 @@
 import Foundation
 import Hummingbird
+import HTTPTypes
+import MCP
 
 /// Local HTTP API as specified in the PRD.
 ///
@@ -21,19 +23,28 @@ final class LocalAPIServer: @unchecked Sendable {
     private weak var imsg: ImsgClient?
     private weak var tunnel: TunnelManager?
     private weak var queue: RelayQueue?
+    private let mcpTransport: StatelessHTTPServerTransport?
     private var task: Task<Void, Error>?
 
-    init(port: Int, imsg: ImsgClient, tunnel: TunnelManager, queue: RelayQueue) {
+    init(
+        port: Int,
+        imsg: ImsgClient,
+        tunnel: TunnelManager,
+        queue: RelayQueue,
+        mcpTransport: StatelessHTTPServerTransport? = nil
+    ) {
         self.port = port
         self.imsg = imsg
         self.tunnel = tunnel
         self.queue = queue
+        self.mcpTransport = mcpTransport
     }
 
     func start() {
         let imsg = self.imsg
         let tunnel = self.tunnel
         let queue = self.queue
+        let mcpTransport = self.mcpTransport
         let port = self.port
 
         task = Task.detached {
@@ -105,6 +116,22 @@ final class LocalAPIServer: @unchecked Sendable {
                 return Self.json(["queued": true])
             }
 
+            // MCP over HTTP. The Hummingbird request gets adapted into
+            // the SDK's framework-agnostic `MCP.HTTPRequest`, handed to
+            // `StatelessHTTPServerTransport`, and the resulting
+            // `MCP.HTTPResponse` is adapted back. The transport bridges
+            // into the SDK `Server` boot from `AppDelegate`, so the
+            // same tools that work over stdio are reachable here.
+            router.post("/mcp") { req, _ -> Response in
+                guard let transport = mcpTransport else {
+                    throw HTTPError(.serviceUnavailable)
+                }
+                let body = try await req.body.collect(upTo: 1_048_576)
+                let mcpRequest = Self.makeMCPRequest(req: req, body: Data(buffer: body))
+                let mcpResponse = await transport.handleRequest(mcpRequest)
+                return Self.makeHummingbirdResponse(from: mcpResponse)
+            }
+
             let app = Application(
                 router: router,
                 configuration: .init(address: .hostname("127.0.0.1", port: port))
@@ -148,6 +175,49 @@ final class LocalAPIServer: @unchecked Sendable {
     fileprivate static func intParam(_ req: Request, _ name: String, default fallback: Int) -> Int {
         guard let raw = req.uri.queryParameters[Substring(name)] else { return fallback }
         return Int(String(raw)) ?? fallback
+    }
+
+    // MARK: MCP adapters
+
+    /// Hummingbird `Request` → MCP `HTTPRequest`. The SDK's transport
+    /// reads `method`, `headers`, `body`, and `path` only — we don't
+    /// have to translate the full URI.
+    fileprivate static func makeMCPRequest(req: Request, body: Data) -> MCP.HTTPRequest {
+        var headers: [String: String] = [:]
+        for field in req.headers {
+            // canonicalName is lowercased; MCP's `header(_:)` does
+            // case-insensitive lookup so this is safe.
+            headers[field.name.canonicalName] = field.value
+        }
+        return MCP.HTTPRequest(
+            method: req.method.rawValue,
+            headers: headers,
+            body: body.isEmpty ? nil : body,
+            path: "/mcp"
+        )
+    }
+
+    /// MCP `HTTPResponse` → Hummingbird `Response`. Carries over the
+    /// status code, all headers (including `Content-Type` and any
+    /// `MCP-Session-Id` the transport sets), and the body bytes.
+    fileprivate static func makeHummingbirdResponse(from mcpResponse: MCP.HTTPResponse) -> Response {
+        var headers = HTTPFields()
+        for (name, value) in mcpResponse.headers {
+            if let fieldName = HTTPField.Name(name) {
+                headers[fieldName] = value
+            }
+        }
+        let body: ResponseBody
+        if let data = mcpResponse.bodyData {
+            body = .init(byteBuffer: ByteBuffer(data: data))
+        } else {
+            body = .init()
+        }
+        return Response(
+            status: .init(code: mcpResponse.statusCode),
+            headers: headers,
+            body: body
+        )
     }
 }
 

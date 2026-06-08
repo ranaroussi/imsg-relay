@@ -1,6 +1,7 @@
 import Cocoa
 import SwiftUI
 import Sparkle
+import MCP
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -13,6 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var relay: HTTPRelay?
     private var imsg: ImsgClient?
     private var api: LocalAPIServer?
+    private var mcp: MCPService?
+    private var mcpTransport: StatelessHTTPServerTransport?
+    private var mcpTask: Task<Void, Error>?
 
     private var updater: SPUStandardUpdaterController?
 
@@ -28,7 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: NSApplicationDelegate
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    func applicationDidFinishLaunching(_ notification: Foundation.Notification) {
         // Sparkle aborts hard if SUPublicEDKey is missing. Skip the updater
         // entirely until a release build injects a real key.
         let pubKey = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String ?? ""
@@ -52,11 +56,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
+    func applicationWillTerminate(_ notification: Foundation.Notification) {
         stopPermissionPolling()
         Task { await relay?.stop() }
         api?.stop()
         tunnel?.stop()
+        mcpTask?.cancel()
+        if let mcpTransport {
+            Task { await mcpTransport.disconnect() }
+        }
     }
 
     // MARK: Runtime
@@ -82,11 +90,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let relay = HTTPRelay(queue: queue, tunnel: tunnel)
             let imsg  = try ImsgClient(queue: queue, relay: relay)
             tunnel.attach(relay: relay)
+
+            // HTTP MCP: a `StatelessHTTPServerTransport` from the SDK
+            // gets bound to the SDK's `Server`, and the same transport
+            // is handed to `LocalAPIServer` which routes `POST /mcp`
+            // through it. OriginValidator is disabled because tunnel
+            // traffic arrives from arbitrary external clients; the
+            // bearer auth middleware on LocalAPIServer is the gate.
+            let mcpTransport = StatelessHTTPServerTransport(
+                validationPipeline: StandardValidationPipeline(validators: [
+                    OriginValidator.disabled,
+                    AcceptHeaderValidator(mode: .jsonOnly),
+                    ContentTypeValidator(),
+                    ProtocolVersionValidator(),
+                ])
+            )
+            let mcp = MCPService(imsg: imsg, transport: mcpTransport)
+
             let api = LocalAPIServer(
                 port: AppConfigStore.shared.current.localAPIPort,
                 imsg: imsg,
                 tunnel: tunnel,
-                queue: queue
+                queue: queue,
+                mcpTransport: mcpTransport
             )
 
             self.queue = queue
@@ -94,9 +120,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.relay = relay
             self.imsg = imsg
             self.api = api
+            self.mcp = mcp
+            self.mcpTransport = mcpTransport
 
             Task { await relay.start() }
             Task { await imsg.startWatching() }
+            mcpTask = Task { try await mcp.run() }
             api.start()
             relay.relay(type: .relayStarted, payload: AnyCodable([:] as [String: Any]))
 
