@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>ImsgRelay</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.imsg-relay.app</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>iMessage Relay</string>
+    <key>CFBundleDisplayName</key>
+    <string>iMessage Relay</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026. MIT License.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>iMessage Relay sends iMessages on your behalf through Messages.app.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>iMessage Relay resolves phone numbers and emails to contact names for inbound events.</string>
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/ranaroussi/imsg-relay/main/appcast.xml</string>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUPublicEDKey</key>
+    <string></string>
+</dict>
+</plist>

@@ -1,0 +1,38 @@
+# Swift / SwiftPM
+src/.build/
+.build/
+*.swiftmodule
+*.swiftdoc
+.swiftpm/
+Package.resolved
+
+# Xcode (we intentionally do NOT use Xcode; this just guards against accidents)
+xcuserdata/
+*.xcworkspace
+*.xcodeproj
+
+# App bundle artifacts
+*.app
+*.zip
+*.dmg
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Bundled binaries downloaded at build time
+src/Sources/Resources/cloudflared
+src/Sources/Resources/cloudflared-*
+
+# Logs
+*.log
+logs/
+
+# Editor
+.vscode/settings.json
+.idea/
+
+# Local dev
+*.local
+.env

@@ -1,0 +1,184 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: macos-14
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            swift_arch: arm64
+            cloudflared_asset: cloudflared-darwin-arm64
+          - arch: x86_64
+            swift_arch: x86_64
+            cloudflared_asset: cloudflared-darwin-amd64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app || true
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Import code signing certificate
+        if: env.APPLE_DEVELOPER_CERTIFICATE_P12_BASE64 != ''
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12_BASE64 }}
+          p12-password: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_PASSWORD }}
+        env:
+          APPLE_DEVELOPER_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12_BASE64 }}
+
+      - name: Resolve version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ]; then
+            VERSION="0.0.0-dev"
+          fi
+          BUILD_NUMBER="$(git rev-list --count HEAD)"
+          echo "version=$VERSION"             >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER"   >> "$GITHUB_OUTPUT"
+
+      - name: Download cloudflared
+        run: |
+          mkdir -p src/Sources/Resources
+          curl -fSL --retry 3 --retry-delay 5 \
+            "https://github.com/cloudflare/cloudflared/releases/latest/download/${{ matrix.cloudflared_asset }}" \
+            -o src/Sources/Resources/cloudflared
+          chmod +x src/Sources/Resources/cloudflared
+          file src/Sources/Resources/cloudflared
+
+      - name: Build .app bundle
+        env:
+          CODESIGN_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
+          APP_VERSION: ${{ steps.version.outputs.version }}
+          TARGET_ARCH: ${{ matrix.swift_arch }}
+        run: |
+          chmod +x create-app-bundle.sh
+          ./create-app-bundle.sh
+
+      - name: Verify code signature (best effort)
+        run: |
+          codesign --verify --deep --strict --verbose=2 "iMessage Relay.app" || true
+          spctl -a -vvv -t install "iMessage Relay.app" || echo "::warning::Gatekeeper assessment failed (expected without notarization)"
+
+      - name: Notarize
+        if: env.APPLE_ID != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "iMessage Relay.app" imsg-relay-notarize.zip
+          xcrun notarytool submit imsg-relay-notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait
+          xcrun stapler staple "iMessage Relay.app"
+          xcrun stapler validate "iMessage Relay.app"
+          rm imsg-relay-notarize.zip
+
+      - name: Package ZIP
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "iMessage Relay.app" "imsg-relay-${{ matrix.arch }}.zip"
+          shasum -a 256 "imsg-relay-${{ matrix.arch }}.zip" > "imsg-relay-${{ matrix.arch }}.zip.sha256"
+
+      - name: Package DMG
+        run: |
+          brew install create-dmg
+          create-dmg \
+            --volname "iMessage Relay" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "iMessage Relay.app" 175 120 \
+            --hide-extension "iMessage Relay.app" \
+            --app-drop-link 425 120 \
+            "imsg-relay-${{ matrix.arch }}.dmg" \
+            "iMessage Relay.app" || true
+          if [ -f "imsg-relay-${{ matrix.arch }}.dmg" ]; then
+            shasum -a 256 "imsg-relay-${{ matrix.arch }}.dmg" > "imsg-relay-${{ matrix.arch }}.dmg.sha256"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: imsg-relay-${{ matrix.arch }}
+          path: |
+            imsg-relay-${{ matrix.arch }}.zip
+            imsg-relay-${{ matrix.arch }}.zip.sha256
+            imsg-relay-${{ matrix.arch }}.dmg
+            imsg-relay-${{ matrix.arch }}.dmg.sha256
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: macos-14
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage release files
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.zip' -o -name '*.dmg' -o -name '*.sha256' \) -exec cp {} release/ \;
+          ls -la release
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## iMessage Relay ${{ github.ref_name }}
+
+            macOS menu bar app that turns a Mac into an iMessage gateway.
+
+            ### Downloads
+
+            | Architecture | DMG | ZIP |
+            |--------------|-----|-----|
+            | Apple Silicon (M1/M2/M3/M4) | `imsg-relay-arm64.dmg` | `imsg-relay-arm64.zip` |
+            | Intel (x86_64)              | `imsg-relay-x86_64.dmg` | `imsg-relay-x86_64.zip` |
+
+            ### Install
+
+            1. Download the right file for your Mac.
+            2. Mount the DMG (or unzip) and drag **iMessage Relay.app** to **Applications**.
+            3. Grant Full Disk Access (System Settings → Privacy & Security) so the relay can read `chat.db`.
+            4. On first send, grant Automation → Messages.
+            5. Open Settings from the menu bar icon and set your server endpoint + bearer token.
+
+            ### Verification
+
+            ```bash
+            shasum -a 256 -c imsg-relay-arm64.zip.sha256
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
