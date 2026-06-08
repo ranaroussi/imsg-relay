@@ -383,6 +383,15 @@ Required secrets in the repo: `APPLE_DEVELOPER_CERTIFICATE_P12_BASE64`, `APPLE_D
 
 ---
 
+## Documentation
+
+- [`TESTING.md`](TESTING.md) — manual QA playbook for every surface (REST, MCP stdio, MCP HTTP, tunnel, permissions, settings UX)
+- [`CHANGELOG.md`](CHANGELOG.md) — version history
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — technical deep-dive: concurrency model, process modes, lifecycle, data flow, dependency rationale
+- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — common issues and recovery steps
+
+---
+
 ## Credits
 
 - [`openclaw/imsg`](https://github.com/openclaw/imsg) — the heavy lifting (chat.db reads, watcher, AppleScript send surface)
