@@ -73,9 +73,49 @@ struct SettingsView: View {
 
             Section("Cloudflare Tunnel") {
                 Toggle("Enable tunnel", isOn: $config.tunnelEnabled)
-                    .help("Exposes the local API + MCP via a public trycloudflare.com URL.")
+                    .help("Exposes the local API + MCP via Cloudflare's edge so your remote server can reach this Mac.")
 
                 if config.tunnelEnabled {
+                    Picker("Mode", selection: $config.tunnelMode) {
+                        Text("Free (trycloudflare.com)").tag(TunnelMode.quick)
+                        Text("Named (your own domain)").tag(TunnelMode.named)
+                    }
+                    .pickerStyle(.segmented)
+
+                    switch config.tunnelMode {
+                    case .quick:
+                        Text("The relay gets a fresh `*.trycloudflare.com` URL on every restart. Great for first-launch and for code-based webhook receivers that read `server.callback_url` out of each event.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                    case .named:
+                        LabeledContent("Tunnel token") {
+                            SecureField("eyJh… (paste from Cloudflare Zero Trust dashboard)", text: $config.tunnelToken)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(minWidth: 280)
+                        }
+
+                        LabeledContent("Public hostname") {
+                            TextField("mcp.yourcompany.com", text: $config.tunnelHostname)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(minWidth: 280)
+                                .disableAutocorrection(true)
+                        }
+
+                        Text("Use this mode when your MCP client or webhook receiver needs a stable URL it can hardcode. Create a tunnel under **Zero Trust → Networks → Tunnels** in the Cloudflare dashboard, point the public hostname at `http://localhost:\(config.localAPIPort)`, then paste the connector token here.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if config.tunnelToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || config.tunnelHostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Label("Both token and hostname are required to start a named tunnel.",
+                                  systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                                .font(.caption)
+                        }
+                    }
+
                     tunnelStatusRow
                 }
             }

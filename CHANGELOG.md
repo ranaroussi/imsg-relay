@@ -11,6 +11,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Named Cloudflare Tunnel mode.** Settings → Network → Cloudflare
+  Tunnel now has a **Mode** picker with two options:
+  - **Free (`trycloudflare.com`)** — current behavior, ephemeral URL,
+    no CF account required. Default. Right choice for code-based
+    webhook receivers that read `server.callback_url` out of every
+    event.
+  - **Named (your own domain)** — runs `cloudflared tunnel run
+    --token <token>` against a connector configured in the user's
+    Cloudflare Zero Trust dashboard. The hostname is stable, so MCP
+    clients that hardcode the server URL keep working across restarts.
+    Requires the connector token and the public hostname (e.g.
+    `mcp.yourcompany.com`) to be entered in Settings.
+
+  Implementation:
+  - `TunnelMode` enum on `AppConfig` with `.quick` / `.named` cases.
+  - New `AppConfig.tunnelToken` (rendered as `SecureField`) and
+    `tunnelHostname` fields, both with backwards-compatible decoding
+    so existing installs migrate seamlessly.
+  - `TunnelManager.start(port:)` builds a per-mode `Runtime` struct
+    (arguments + stderr extractor) and runs cloudflared accordingly.
+    Quick mode parses `*.trycloudflare.com` out of stderr; named mode
+    watches for `Registered tunnel connection` and surfaces
+    `https://<hostname>` as the public URL.
+  - `AppDelegate.configChanged` keeps a `TunnelConfigSnapshot` so it
+    only bounces the tunnel when something tunnel-relevant changed
+    (enabled flag, mode, token, hostname, or local API port), not on
+    every Save.
+  - Hostname normalization strips an optional `http://` or `https://`
+    prefix and trailing slashes so users can paste either form.
+  - Named-mode misconfiguration (token or hostname empty) shows a
+    friendly warning alert with an "Open Settings" button.
+
 - **Attachment relay.** Inbound events whose `attachments_count > 0`
   now carry an `attachments` array with per-file metadata
   (`filename`, `mime_type`, `served_mime_type`, `uti`, `size`,

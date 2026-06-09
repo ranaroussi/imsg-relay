@@ -20,7 +20,7 @@ Built on [`openclaw/imsg`](https://github.com/openclaw/imsg) (specifically its `
 - **Reliable delivery.** SQLite WAL-backed queue with exponential backoff (capped at 60s, parked as `dead` after configurable max attempts). No message loss across crashes, network outages, or tunnel reconnects.
 - **Send via the menu bar's host.** POST a JSON body to `/send` and Messages.app delivers it through the same account you're signed into.
 - **MCP server.** Spawn the binary with `--mcp` to serve seven tools (`imsg_list_chats`, `imsg_get_chat`, `imsg_get_history`, `imsg_search_messages`, `imsg_send_message`, `imsg_send_attachment`, `imsg_get_status`) over stdio.
-- **Cloudflare Tunnel built in.** Toggle it on in Settings and the app supervises a `cloudflared tunnel --url ...` child process, surfacing the public `*.trycloudflare.com` URL in the menu bar and in `server.callback_url` on every event.
+- **Cloudflare Tunnel built in, two modes.** Toggle it on in Settings and pick **Free** (`*.trycloudflare.com`, rotating URL) for zero-setup demos, or **Named** (your own domain via a CF connector token) for a stable hostname that MCP clients can hardcode. The app supervises the `cloudflared` child process either way and surfaces the public URL in the menu bar and in `server.callback_url` on every event.
 - **Native macOS UX.** Menu bar icon, friendly Full Disk Access prompt, SwiftUI settings window matching System Settings' grouped form style, Sparkle 2 auto-updates.
 - **Signed + notarized.** GitHub Actions builds arm64 + x86_64 DMG/ZIP artifacts with Developer ID signing, notarization, and SHA-256 checksums.
 
@@ -78,6 +78,9 @@ Click the menu bar icon → **Settings…** and fill in:
 | Network | **Local API port** | Default `7878`. |
 | Network | **MCP port** | Default `7879`. *(Reserved — see "MCP status" below.)* |
 | Network | **Enable Cloudflare Tunnel** | Spawns `cloudflared` and reveals the live public URL inline with a copy button. |
+| Network | **Tunnel mode** | `Free (trycloudflare.com)` (default, ephemeral URL) or `Named (your own domain)` (stable hostname). See [Tunnel modes](#tunnel-modes). |
+| Network | **Tunnel token** | (Named mode only) Cloudflare connector token from the Zero Trust dashboard. Stored as a secret. |
+| Network | **Public hostname** | (Named mode only) The DNS name your tunnel routes from, e.g. `mcp.yourcompany.com`. |
 | Network | **Max retry attempts** | Default `12`. Each attempt waits `min(60, 2^n) + jitter` seconds. After this many failures an event is parked as `dead`. |
 
 Click **Save**, you'll see a green ✓ Saved confirmation.
@@ -87,6 +90,52 @@ If `cloudflared` isn't bundled (dev builds without it in `Contents/Resources/`) 
 ```bash
 brew install cloudflared
 ```
+
+### Tunnel modes
+
+iMessage Relay can front the local API + MCP with the Cloudflare edge in two ways. Pick whichever fits your remote endpoint architecture.
+
+| | **Free** (`trycloudflare.com`) | **Named** (custom domain) |
+|---|---|---|
+| **Underlying command** | `cloudflared tunnel --url http://localhost:<port>` | `cloudflared tunnel run --token <token>` |
+| **URL** | Random `*.trycloudflare.com`, **rotates every restart** | Stable hostname you own (e.g. `mcp.yourcompany.com`) |
+| **CF account required** | No | Yes (any plan, including free) |
+| **Setup time** | Zero | ~3 minutes in the dashboard |
+| **Best for** | First-launch demos, code-based webhook receivers that read `server.callback_url` out of every event | MCP clients that hardcode the server URL; any consumer that can't refresh its config dynamically |
+| **DNS** | CF assigns | You point a CNAME in your zone at the tunnel (CF auto-creates it from the dashboard) |
+| **CF Access policies** | Not available | mTLS, IP allowlists, OAuth/IdP gates — sit in front of the tunnel hostname |
+
+Both modes emit the same `tunnel.connected` / `tunnel.disconnected` / `tunnel.changed` events. The `server.callback_url` on every event always reflects the current public URL — `*.trycloudflare.com` in free mode, `https://<your-hostname>` in named mode.
+
+#### Setting up a named tunnel (one-time)
+
+1. Make sure you have a domain on Cloudflare (any plan).
+2. Go to **[Zero Trust dashboard](https://one.dash.cloudflare.com/) → Networks → Tunnels → Create a tunnel**.
+3. Pick the **Cloudflared** connector type, name it (e.g. `imsg-relay-my-mac`), and continue.
+4. On the **Install and run a connector** step, **copy the long connector token** (starts with `eyJh…`). You don't actually need to run the install command CF shows — iMessage Relay's bundled `cloudflared` will use the token directly.
+5. On the **Public Hostnames** step, add a route:
+    - **Subdomain:** `mcp` (or whatever you like)
+    - **Domain:** pick your CF-managed domain
+    - **Service:** `HTTP`
+    - **URL:** `localhost:7878` (or whatever your local API port is — must match Settings → Network → Local API port)
+6. Save. CF creates the CNAME automatically.
+7. In iMessage Relay → Settings → Network → Cloudflare Tunnel:
+    - Switch **Mode** to **Named (your own domain)**
+    - Paste the **Tunnel token**
+    - Paste the **Public hostname** (e.g. `mcp.yourcompany.com` — bare host, no `https://` needed, we add it)
+    - Click **Save**
+
+The tunnel will stop and restart automatically when you save. The Settings → Network → Public URL row will show `https://mcp.yourcompany.com` once the connector establishes its four outbound connections to the CF edge (typically 2–5 seconds).
+
+#### Switching modes
+
+Flip the **Mode** picker and click Save. The app stops the running tunnel and starts a new one with the new mode's arguments. Quick mode reverts to the random `*.trycloudflare.com` URL on next start; named mode reuses your configured hostname.
+
+If you select **Named** without entering both a token and hostname, the app shows an alert with a shortcut back to Settings. The tunnel won't try to start until both fields are populated.
+
+#### One tunnel, multiple services
+
+A single named tunnel can route multiple hostnames to different local ports — useful if you run other services alongside iMessage Relay. Add more **Public Hostnames** entries in the CF dashboard pointing at different `localhost:<port>` targets. iMessage Relay itself only cares about the hostname mapped to its API port.
 
 ---
 
@@ -202,7 +251,9 @@ iMessage Relay speaks MCP over two transports — same tool surface either way. 
 
 ### HTTP (default, reachable via Cloudflare Tunnel)
 
-The menu bar app boots an MCP server on a `StatelessHTTPServerTransport` (from the official [`modelcontextprotocol/swift-sdk`](https://github.com/modelcontextprotocol/swift-sdk)) and exposes it as `POST /mcp` on the same Hummingbird server that serves the REST API. With the Cloudflare Tunnel enabled, your remote AI agents reach it through the public `*.trycloudflare.com` URL with the same bearer token you use for the REST API.
+The menu bar app boots an MCP server on a `StatelessHTTPServerTransport` (from the official [`modelcontextprotocol/swift-sdk`](https://github.com/modelcontextprotocol/swift-sdk)) and exposes it as `POST /mcp` on the same Hummingbird server that serves the REST API. With the Cloudflare Tunnel enabled, your remote AI agents reach it through the public URL with the same bearer token you use for the REST API.
+
+> **Picking a tunnel mode for your MCP client:** if your MCP client can re-read the URL out of incoming webhook events (most code-based backends can), the **free** `*.trycloudflare.com` mode is fine — `server.callback_url` on every event always points at the current tunnel. If your MCP client *hardcodes* the server URL (Claude Desktop config, IDE plugins, some agentic frameworks), use **named** mode so the URL stays stable across restarts. See [Tunnel modes](#tunnel-modes).
 
 ```bash
 curl -sS -X POST "$TUNNEL_URL/mcp" \

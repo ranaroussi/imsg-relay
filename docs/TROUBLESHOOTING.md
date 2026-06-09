@@ -224,15 +224,77 @@ Possible causes:
 ### Tunnel URL keeps rotating
 
 `trycloudflare.com` URLs are ephemeral — they change every restart of
-the cloudflared process. The app handles this gracefully:
+the cloudflared process. That's working as designed for free-tunnel
+mode. The app handles it gracefully:
 
 - `TunnelStatus.shared.publicURL` updates reactively, Settings UI
   re-renders.
-- Every outbound event includes the current URL in `server.callback_url`,
-  so your remote endpoint always learns the latest one.
+- Every outbound event includes the current URL in
+  `server.callback_url`, so code-based webhook receivers always learn
+  the latest one.
 
-For stable URLs, you'll need a **named tunnel** with a Cloudflare
-account. That's on the roadmap (see README).
+If your remote endpoint **can't** dynamically follow the rotation
+(MCP clients with hardcoded URLs, IDE plugins, agentic frameworks
+loading config at boot, etc.), switch to **named tunnel mode**:
+Settings → Network → Cloudflare Tunnel → Mode → "Named (your own
+domain)". See [Tunnel modes in the README](../README.md#tunnel-modes)
+for the CF dashboard setup walkthrough.
+
+### Named tunnel won't connect
+
+You picked **Named** mode in Settings, saved, but the Public URL row
+never goes green. Check in this order:
+
+1. **Did you actually paste both fields?** The Settings panel shows
+   a yellow warning if either the token or the hostname is empty.
+   Both are required. Re-open Settings and confirm.
+
+2. **Is the connector token current?** Token rotations from the CF
+   dashboard invalidate the old token immediately. Pull a fresh
+   token from **Zero Trust → Networks → Tunnels → your tunnel →
+   Configure → Install and run a connector** and re-paste it.
+
+3. **Did you configure a Public Hostname in the dashboard?** A named
+   tunnel with no public hostnames will register connections fine
+   but won't route any traffic. In the CF dashboard:
+   **Tunnels → your tunnel → Public Hostnames → Add a public hostname**.
+   Service must be `HTTP` and URL must be `localhost:<port>` where
+   `<port>` matches Settings → Network → Local API port.
+
+4. **Local API port mismatch.** If you change the Local API port in
+   Settings, you also need to update the **Service** field on the
+   matching Public Hostname in the CF dashboard. cloudflared will
+   accept inbound traffic but route it to a port nothing's listening
+   on, so the user-visible symptom is "tunnel up, requests time out".
+
+5. **Inspect cloudflared's stderr.** The app surfaces it under the
+   `tunnel` category:
+
+   ```bash
+   log show --predicate 'subsystem == "com.imsg-relay.app" && category == "tunnel"' \
+     --info --last 5m
+   ```
+
+   Look for `Registered tunnel connection` (good — you're up) vs.
+   `failed to register tunnel: …` (bad — token issue).
+
+6. **Try the same token by hand.** If you have `cloudflared`
+   installed on your shell, run:
+
+   ```bash
+   cloudflared tunnel run --token <your-token>
+   ```
+
+   If that also fails to register, the issue is on the CF side, not
+   ours. Check the dashboard for the tunnel's connector status.
+
+### Named tunnel hostname showing `https://https://...`
+
+You pasted the hostname with the scheme included. The app strips an
+optional `http://` or `https://` prefix at normalization time, but if
+you're still seeing a doubled scheme on `server.callback_url` you may
+be on an older build. Repaste as a bare hostname (`mcp.yourcompany.com`)
+and Save.
 
 ---
 

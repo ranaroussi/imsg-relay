@@ -20,6 +20,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var updater: SPUStandardUpdaterController?
 
+    /// Snapshot of tunnel-relevant config from the last time we
+    /// applied changes. Used by `configChanged` to decide whether to
+    /// stop+restart the tunnel after a Save — we only restart when
+    /// the user actually touched something tunnel-related, not every
+    /// time they tweak an unrelated field.
+    private struct TunnelConfigSnapshot: Equatable {
+        var enabled: Bool
+        var mode: TunnelMode
+        var token: String
+        var hostname: String
+        var port: Int
+    }
+    private var lastTunnelSnapshot: TunnelConfigSnapshot?
+
     /// True between the moment we detect missing Full Disk Access and
     /// the moment we successfully boot. The menu bar uses this to swap
     /// in a recovery-focused menu rather than the normal runtime menu.
@@ -52,6 +66,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(configChanged),
             name: AppConfigStore.didChangeNotification,
+            object: nil
+        )
+
+        // Surfaced by `TunnelManager` when the user picks named-mode
+        // but hasn't entered the token + hostname. The alert in
+        // `TunnelManager.showNamedTunnelMisconfiguredAlert()` posts
+        // this so we can present the Settings window.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(openSettings),
+            name: .imsgOpenSettings,
             object: nil
         )
     }
@@ -132,6 +157,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if AppConfigStore.shared.current.tunnelEnabled {
                 startTunnel()
             }
+            // Seed the snapshot so subsequent `configChanged` calls
+            // compare against what we just booted with, not nil.
+            let cfg = AppConfigStore.shared.current
+            self.lastTunnelSnapshot = TunnelConfigSnapshot(
+                enabled: cfg.tunnelEnabled,
+                mode: cfg.tunnelMode,
+                token: cfg.tunnelToken,
+                hostname: cfg.tunnelHostname,
+                port: cfg.localAPIPort
+            )
             refreshMenu()
         } catch {
             Log.app.error("Failed to boot runtime: \(error.localizedDescription, privacy: .public)")
@@ -159,8 +194,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func configChanged() {
         refreshMenu()
         let cfg = AppConfigStore.shared.current
-        if cfg.tunnelEnabled, tunnel?.isRunning != true { startTunnel() }
-        if !cfg.tunnelEnabled, tunnel?.isRunning == true { tunnel?.stop() }
+        let snapshot = TunnelConfigSnapshot(
+            enabled: cfg.tunnelEnabled,
+            mode: cfg.tunnelMode,
+            token: cfg.tunnelToken,
+            hostname: cfg.tunnelHostname,
+            port: cfg.localAPIPort
+        )
+
+        // Restart the tunnel only when something tunnel-relevant
+        // changed (enabled toggle, mode pick, token, hostname, or
+        // local API port — the last because quick mode binds to that
+        // specific port). Unrelated saves (bearer token rotation,
+        // backfill toggle, …) don't bounce the tunnel.
+        let prev = lastTunnelSnapshot
+        let changed = prev != snapshot
+        lastTunnelSnapshot = snapshot
+
+        if !changed { return }
+
+        if tunnel?.isRunning == true { tunnel?.stop() }
+        if cfg.tunnelEnabled { startTunnel() }
     }
 
     // MARK: Main menu (keybindings)
@@ -453,4 +507,11 @@ private extension NSMenuItem {
         item.target = target
         return item
     }
+}
+
+extension Foundation.Notification.Name {
+    /// Posted by helper code that wants the Settings window opened
+    /// (e.g. the named-tunnel misconfigured alert). `AppDelegate`
+    /// listens and calls its `openSettings` action.
+    static let imsgOpenSettings = Foundation.Notification.Name("ImsgRelay.openSettings")
 }

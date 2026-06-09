@@ -374,33 +374,92 @@ on the bearer-auth middleware (`BearerAuthMiddleware` in
 
 ## 8. Cloudflare Tunnel supervision
 
-`TunnelManager` is a process supervisor for `cloudflared`:
+`TunnelManager` is a process supervisor for `cloudflared`. It runs in
+one of two modes — selected by `AppConfig.tunnelMode` — and the
+process invocation, stderr parsing, and "tunnel ready" detection all
+branch on that mode:
+
+| | `.quick` (free) | `.named` (custom domain) |
+|---|---|---|
+| **`cloudflared` arguments** | `tunnel --no-autoupdate --url http://localhost:<port>` | `tunnel run --no-autoupdate --token <token>` |
+| **Ingress config source** | The CLI's `--url` arg | The Cloudflare dashboard ("Public Hostnames" attached to the tunnel) |
+| **Public URL discovery** | Regex `https://[a-z0-9-]+\.trycloudflare\.com` against stderr | Watch stderr for `Registered tunnel connection`; URL is `https://<config.tunnelHostname>` |
+| **CF account needed** | No | Yes |
+| **URL stability** | New random URL every restart | Stable, user-owned hostname |
+
+The lookup order for the `cloudflared` binary itself is the same in
+both modes:
+
+```
+1. App bundle: Contents/Resources/cloudflared        (CI release builds)
+2. /opt/homebrew/bin/cloudflared                     (Apple Silicon brew)
+3. /usr/local/bin/cloudflared                        (Intel brew)
+4. /usr/bin/cloudflared                              (system-wide install)
+5. `which cloudflared` fallback                      (anything else on PATH)
+```
+
+If none of those resolve, the user gets an alert with `brew install cloudflared` instructions and a "Copy install command" button.
+
+#### Mode dispatch: `buildRuntime(port:)`
+
+Internally, `start(port:completion:)` calls `buildRuntime(port:)`
+which reads the current `AppConfigStore` value and returns a
+`Runtime` struct:
 
 ```swift
-func start(port: Int, onURL: @escaping (String?) -> Void) {
-    // Look for cloudflared in:
-    //   1. App bundle: Contents/Resources/cloudflared
-    //   2. /opt/homebrew/bin/cloudflared
-    //   3. /usr/local/bin/cloudflared
-    //   4. which cloudflared
-    // If none found, present an alert with brew install instructions.
-    //
-    // Launch:
-    //     cloudflared tunnel --url http://127.0.0.1:<port>
-    //
-    // Parse stderr for "https://....trycloudflare.com"
-    // On URL match → publish to TunnelStatus.shared, call onURL, push to relay
+private struct Runtime: Sendable {
+    let arguments: [String]
+    let urlExtractor: @Sendable (String) -> String?
 }
 ```
 
+The common process-management code (stdout/stderr pipes, lifecycle
+events, `Resolver` callback box, `TunnelStatus` mirroring) doesn't
+care which mode is active — it just calls `runtime.urlExtractor(text)`
+on each stderr chunk until it returns a non-nil URL, then publishes
+that URL exactly once.
+
+For `.named`, `Runtime.urlExtractor` ignores the actual text content
+of stderr (cloudflared in token mode doesn't print the public URL
+because it isn't its job to know it — the hostname is bound at the CF
+side) and only checks whether `Registered tunnel connection` appears.
+That's the signal that one of the four edge connections is healthy
+and traffic can start flowing. We then surface `https://<hostname>`
+where `hostname` is `config.tunnelHostname` after `normalizeHostname()`
+strips an optional `https://`/`http://` prefix and trailing slashes.
+
+#### Misconfiguration guard
+
+If the user selects named mode but leaves the token or hostname
+empty, `buildRuntime` returns `nil` and presents a warning alert with
+an "Open Settings" button. The alert posts `Notification.Name.imsgOpenSettings`
+which `AppDelegate` listens for and uses to call its
+`openSettings(_:)` action — keeps `TunnelManager` from needing a
+direct reference to `AppDelegate`.
+
+#### Restart on config change
+
+`AppDelegate.configChanged` (the observer on
+`AppConfigStore.didChangeNotification`) keeps a
+`TunnelConfigSnapshot` of `(enabled, mode, token, hostname, port)`
+from the last time it applied changes. On every Save it diffs the
+new snapshot against the previous one and only stops + restarts the
+tunnel when one of those five fields actually changed. Unrelated
+saves (bearer token rotation, backfill toggle, etc.) leave the
+running tunnel alone.
+
+#### Observability
+
 `TunnelStatus.shared` is the `@MainActor ObservableObject` that the
-SwiftUI Settings view subscribes to. `TunnelManager` posts updates via
-`Task { @MainActor in TunnelStatus.shared.publicURL = url }` at three
-lifecycle points: URL detected, process started, process exited.
+SwiftUI Settings view subscribes to. `TunnelManager` posts updates
+via `Task { @MainActor in TunnelStatus.shared.publicURL = url }` at
+three lifecycle points: URL/connection detected, process started,
+process exited.
 
 The tunnel URL is also written into every outbound event's
-`server.callback_url` so remote endpoints learn the current address —
-useful when the URL rotates.
+`server.callback_url` so remote endpoints learn the current address.
+In free mode this matters every restart (URL rotated); in named mode
+the URL is constant but the event always carries the truth.
 
 ---
 

@@ -367,8 +367,12 @@ curl -sS -X POST http://127.0.0.1:7878/mcp \
 
 ## 6. Cloudflare Tunnel
 
+### Free mode (default — `*.trycloudflare.com`)
+
 ```bash
-# Enable in Settings → Network → Enable Cloudflare Tunnel. Save.
+# Settings → Network → Enable Cloudflare Tunnel = ON
+# Settings → Network → Mode = Free (trycloudflare.com)
+# Save.
 # Within ~3-10 seconds the menu bar shows a *.trycloudflare.com URL.
 
 # In Settings → General, the "Tunnel" row shows the URL with a Copy button.
@@ -378,7 +382,63 @@ TUNNEL=$(curl -sS -H "Authorization: Bearer dev-token-1234" \
   http://127.0.0.1:7878/status | jq -r .tunnel_url)
 curl -sS "$TUNNEL/health" | jq
 
+# Restart the app — note the URL changes. That's expected for free mode.
+
 # Disable the tunnel in Settings. The menu bar row + /status both reflect "off".
+```
+
+### Named mode (stable hostname on your domain)
+
+**Prerequisites:** A Cloudflare-managed domain, plus a tunnel created
+under Zero Trust → Networks → Tunnels with a Public Hostname pointing
+at `localhost:7878`. See [README → Tunnel modes](README.md#tunnel-modes)
+for the dashboard walkthrough.
+
+```bash
+# Settings → Network → Enable Cloudflare Tunnel = ON
+# Settings → Network → Mode = Named (your own domain)
+# Tunnel token: paste your eyJh… connector token
+# Public hostname: e.g. mcp.yourcompany.com (bare host, no scheme)
+# Save.
+# Within ~5 seconds the menu bar shows the configured hostname.
+
+# Verify the tunnel routes through your domain:
+curl -sS -H "Authorization: Bearer dev-token-1234" \
+  https://mcp.yourcompany.com/health
+# Expected: 200 OK with the health JSON body
+
+# Validate /status reports the same URL
+curl -sS -H "Authorization: Bearer dev-token-1234" \
+  http://127.0.0.1:7878/status | jq -r .tunnel_url
+# Expected: "https://mcp.yourcompany.com"
+
+# Restart the app. Re-check — the URL should be the same as before.
+# That's the entire point of named mode.
+
+# Edge cases:
+#   - Leave Token blank, keep Hostname filled, Save
+#       → Yellow inline warning in Settings ("Both required")
+#       → On Save, alert appears: "Cloudflare named tunnel not configured"
+#   - Same with Hostname blank
+#   - Paste the hostname with "https://" prefix
+#       → App normalizes; resulting tunnel_url is still https://host (no doubling)
+#   - Switch Mode from Named back to Free, Save
+#       → Tunnel restarts, menu bar shows a fresh *.trycloudflare.com URL
+#   - Switch back to Named without changing token/hostname, Save
+#       → Tunnel restarts on your stable hostname (token/hostname were persisted)
+```
+
+### Smart restart on Save
+
+```bash
+# Make sure tunnel is running (either mode). Note the public URL.
+
+# Change a *non-tunnel* field (e.g. include reactions, max retry attempts,
+# bearer token), Save.
+# Expected: the tunnel stays up, URL unchanged.
+
+# Change a *tunnel* field (mode, token, hostname, or local API port), Save.
+# Expected: tunnel stops + restarts; URL updates accordingly.
 ```
 
 ---

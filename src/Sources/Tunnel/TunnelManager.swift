@@ -1,9 +1,17 @@
 import Foundation
 import AppKit
 
-/// Supervises a `cloudflared tunnel --url http://localhost:<port>` child
-/// process and exposes the public URL. Emits `tunnel.*` events on the
-/// relay so the remote server always knows the current callback URL.
+/// Supervises a `cloudflared` child process and exposes the public URL.
+/// Emits `tunnel.*` events on the relay so the remote server always
+/// knows the current callback URL.
+///
+/// Two modes (see `TunnelMode`):
+///   - `.quick`: `cloudflared tunnel --url http://localhost:<port>`,
+///     URL parsed from stderr (`*.trycloudflare.com`).
+///   - `.named`: `cloudflared tunnel run --token <token>`, URL fixed
+///     by `config.tunnelHostname`. Stderr only used to detect the
+///     "tunnel connection registered" signal that means traffic can
+///     start flowing.
 ///
 /// Lookup order for the binary:
 ///   1. Bundled inside `Contents/Resources/cloudflared` (CI release builds)
@@ -16,6 +24,16 @@ final class TunnelManager: @unchecked Sendable {
     private(set) var publicURL: String?
     private let urlLock = NSLock()
     private weak var relay: HTTPRelay?
+
+    /// Per-mode runtime: how to invoke `cloudflared` and how to
+    /// recognize "the tunnel is live" from its stderr.
+    private struct Runtime: Sendable {
+        let arguments: [String]
+        /// Maps a stderr chunk → the public URL the tunnel will be
+        /// reachable at, or `nil` if this chunk doesn't yet signal
+        /// readiness. Called repeatedly until it returns non-nil.
+        let urlExtractor: @Sendable (String) -> String?
+    }
 
     func attach(relay: HTTPRelay) { self.relay = relay }
 
@@ -52,9 +70,16 @@ final class TunnelManager: @unchecked Sendable {
             return
         }
 
+        guard let runtime = buildRuntime(port: port) else {
+            // Named mode with missing token / hostname. The build
+            // helper already showed the actionable alert.
+            completion(nil)
+            return
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: execPath)
-        process.arguments = ["tunnel", "--no-autoupdate", "--url", "http://localhost:\(port)"]
+        process.arguments = runtime.arguments
 
         let stdout = Pipe()
         let stderr = Pipe()
@@ -62,12 +87,10 @@ final class TunnelManager: @unchecked Sendable {
         process.standardError = stderr
 
         let resolver = Resolver(callback: completion)
-        let pattern = "https://[a-z0-9-]+\\.trycloudflare\\.com"
         let consume: @Sendable (FileHandle) -> Void = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
-            guard let range = text.range(of: pattern, options: .regularExpression) else { return }
-            let url = String(text[range])
+            guard let url = runtime.urlExtractor(text) else { return }
             guard let self else { return }
             self.urlLock.lock()
             let firstTime = self.publicURL != url
@@ -130,6 +153,84 @@ final class TunnelManager: @unchecked Sendable {
         Task { @MainActor in
             TunnelStatus.shared.publicURL = nil
             TunnelStatus.shared.isRunning = false
+        }
+    }
+
+    /// Compose the per-mode `cloudflared` runtime. Returns `nil` when
+    /// the user picked `.named` but hasn't yet entered a token + hostname.
+    private func buildRuntime(port: Int) -> Runtime? {
+        let cfg = AppConfigStore.shared.current
+        switch cfg.tunnelMode {
+        case .quick:
+            // The historical default. We match `https://<adjective-adjective-noun-noun>.trycloudflare.com`
+            // out of stderr — cloudflared prints it ~once, typically
+            // within 3 seconds of startup.
+            let pattern = "https://[a-z0-9-]+\\.trycloudflare\\.com"
+            return Runtime(
+                arguments: ["tunnel", "--no-autoupdate", "--url", "http://localhost:\(port)"],
+                urlExtractor: { text in
+                    guard let range = text.range(of: pattern, options: .regularExpression) else { return nil }
+                    return String(text[range])
+                }
+            )
+
+        case .named:
+            let token = cfg.tunnelToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            let host = Self.normalizeHostname(cfg.tunnelHostname)
+            guard !token.isEmpty, !host.isEmpty else {
+                Log.tunnel.error("named tunnel selected but token or hostname is empty")
+                DispatchQueue.main.async { self.showNamedTunnelMisconfiguredAlert() }
+                return nil
+            }
+            let publicURL = "https://\(host)"
+            // cloudflared in token mode reads the ingress rules from
+            // the Cloudflare side, so there's nothing we can verify
+            // about local-port mapping from here. We detect "tunnel
+            // up" via the `Registered tunnel connection` log line
+            // cloudflared prints once each of its four edge
+            // connections is healthy. First match flips us into
+            // "ready" and surfaces the configured hostname as the
+            // public URL.
+            return Runtime(
+                arguments: ["tunnel", "run", "--no-autoupdate", "--token", token],
+                urlExtractor: { text in
+                    text.contains("Registered tunnel connection") ? publicURL : nil
+                }
+            )
+        }
+    }
+
+    /// Strip an optional `https://` or `http://` prefix and any trailing
+    /// slashes so we always compose `https://<bare-hostname>` regardless
+    /// of how the user pasted it.
+    static func normalizeHostname(_ raw: String) -> String {
+        var host = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let scheme = host.range(of: "^https?://", options: .regularExpression) {
+            host.removeSubrange(scheme)
+        }
+        while host.hasSuffix("/") { host.removeLast() }
+        return host
+    }
+
+    @MainActor
+    private func showNamedTunnelMisconfiguredAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Cloudflare named tunnel not configured"
+        alert.informativeText = """
+        You selected "Named tunnel (custom domain)" in Settings but \
+        haven't entered both the connector token and the public hostname.
+
+        Open Settings → Network → Cloudflare Tunnel and fill in:
+          • Tunnel token (eyJh… from the Zero Trust dashboard)
+          • Public hostname (e.g. mcp.yourcompany.com)
+
+        Or switch back to the free `*.trycloudflare.com` tunnel.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NotificationCenter.default.post(name: .imsgOpenSettings, object: nil)
         }
     }
 
