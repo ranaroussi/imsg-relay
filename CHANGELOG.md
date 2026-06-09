@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`callback_url` and absolute attachment URLs now populated
+  immediately at boot in named-tunnel mode.** Previously
+  `TunnelManager.publicURL` was only set after `cloudflared` printed
+  `Registered tunnel connection` on stderr — typically 3-10 seconds
+  into bootstrap. Any iMessage event that arrived in that window was
+  encoded with `"callback_url": ""` and an `attachments[].url_path`
+  but no absolute `attachments[].url`, breaking remote receivers
+  that needed to fetch the bytes through the tunnel.
+
+  In named mode the public URL is fully determined by config (the
+  user-configured `tunnelHostname`), so we can populate it
+  synchronously when `start()` is called — before cloudflared even
+  spawns. The existing stderr "Registered tunnel connection"
+  extractor remains wired up but becomes a no-op confirmation in
+  named mode (its `guard firstTime` short-circuits because
+  `publicURL` already matches). Quick mode is unchanged — the
+  random `*.trycloudflare.com` URL is genuinely unknown until
+  cloudflared prints it.
+
+  Verified live on `imsg.misc.sh`: `GET /status` returns
+  `tunnel_url: "https://imsg.misc.sh"` within 2 seconds of app
+  launch (was previously empty for the full 3-10s bootstrap window).
+
 ### Changed
 
 - **Message text now substitutes a friendly token for `U+FFFC`.**

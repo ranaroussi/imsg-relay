@@ -103,6 +103,38 @@ final class TunnelManager: @unchecked Sendable {
         process.standardError = stderr
 
         let resolver = Resolver(callback: completion)
+
+        // In named mode the public URL is determined by config — we
+        // don't have to wait for cloudflared's stderr to know what
+        // it is. Pre-populate `publicURL` and fire the completion
+        // immediately, so any inbound iMessage that lands during
+        // cloudflared's ~3-10s bootstrap window still gets encoded
+        // with a usable `callback_url` (and absolute
+        // `attachments[].url`). The stderr "Registered tunnel
+        // connection" extractor below is still wired up but becomes
+        // a no-op confirmation in named mode (its `guard firstTime`
+        // short-circuits because publicURL already matches).
+        //
+        // In quick mode we leave publicURL=nil and the stderr-parse
+        // path populates it on first match — the random
+        // `*.trycloudflare.com` URL is genuinely unknown until
+        // cloudflared prints it.
+        let cfg = AppConfigStore.shared.current
+        if cfg.tunnelMode == .named {
+            let host = Self.normalizeHostname(cfg.tunnelHostname)
+            if !host.isEmpty {
+                let synchronousURL = "https://\(host)"
+                urlLock.lock()
+                publicURL = synchronousURL
+                urlLock.unlock()
+                Task { @MainActor in
+                    TunnelStatus.shared.publicURL = synchronousURL
+                }
+                Log.tunnel.info("named-mode publicURL pre-populated from config: \(synchronousURL, privacy: .public)")
+                resolver.fire(synchronousURL)
+            }
+        }
+
         let consume: @Sendable (FileHandle) -> Void = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
