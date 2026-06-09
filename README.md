@@ -109,17 +109,23 @@ Both modes emit the same `tunnel.connected` / `tunnel.disconnected` / `tunnel.ch
 
 #### Setting up a named tunnel (one-time)
 
-1. Make sure you have a domain on Cloudflare (any plan).
+> **You don't need to pre-create the subdomain DNS record.** Cloudflare creates the CNAME for you at step 5 below when you add the Public Hostname. The only DNS prerequisite is that the **apex domain** (`yourcompany.com`) is already on Cloudflare — i.e., its nameservers point at CF and the zone is active.
+
+1. Make sure your domain is on Cloudflare (any plan, including free). If it isn't yet: CF dashboard → Add a site → change your registrar's nameservers to the two CF gives you → wait for the zone to go active.
 2. Go to **[Zero Trust dashboard](https://one.dash.cloudflare.com/) → Networks → Tunnels → Create a tunnel**.
 3. Pick the **Cloudflared** connector type, name it (e.g. `imsg-relay-my-mac`), and continue.
 4. On the **Install and run a connector** step, **copy the long connector token** (starts with `eyJh…`). You don't actually need to run the install command CF shows — iMessage Relay's bundled `cloudflared` will use the token directly.
 5. On the **Public Hostnames** step, add a route:
-    - **Subdomain:** `mcp` (or whatever you like)
-    - **Domain:** pick your CF-managed domain
+    - **Subdomain:** `mcp` (or whatever you like — it doesn't have to exist in DNS yet, CF will create it)
+    - **Domain:** pick your CF-managed domain from the dropdown
     - **Service:** `HTTP`
     - **URL:** `localhost:7878` (or whatever your local API port is — must match Settings → Network → Local API port)
-6. Save. CF creates the CNAME automatically.
-7. In iMessage Relay → Settings → Network → Cloudflare Tunnel:
+
+   When you click Save, CF automatically creates a proxied CNAME `mcp.yourcompany.com → <tunnel-uuid>.cfargotunnel.com` in your DNS zone. You can verify it after the fact under the regular CF dashboard → DNS → Records.
+
+   *Gotcha:* if a conflicting `A`, `AAAA`, or `CNAME` record for that exact hostname already exists (or it's bound to a Worker / Pages site / Email Routing rule), CF will refuse the auto-create and show an error. Delete the conflicting record first, then retry.
+
+6. In iMessage Relay → Settings → Network → Cloudflare Tunnel:
     - Switch **Mode** to **Named (your own domain)**
     - Paste the **Tunnel token**
     - Paste the **Public hostname** (e.g. `mcp.yourcompany.com` — bare host, no `https://` needed, we add it)

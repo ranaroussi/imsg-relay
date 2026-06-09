@@ -261,6 +261,15 @@ never goes green. Check in this order:
    Service must be `HTTP` and URL must be `localhost:<port>` where
    `<port>` matches Settings → Network → Local API port.
 
+   **You don't need to pre-create the subdomain DNS record** — CF
+   creates the proxied CNAME for you when you save the Public Hostname.
+   If CF refuses to auto-create the CNAME with a message like
+   *"An A, AAAA, or CNAME record with that host already exists"*,
+   you've got a conflict: an existing DNS record, or the subdomain is
+   bound to a Worker / Pages site / Email Routing rule. Go to the
+   regular CF dashboard → DNS → Records, delete the conflicting
+   entry, then re-save the Public Hostname.
+
 4. **Local API port mismatch.** If you change the Local API port in
    Settings, you also need to update the **Service** field on the
    matching Public Hostname in the CF dashboard. cloudflared will
