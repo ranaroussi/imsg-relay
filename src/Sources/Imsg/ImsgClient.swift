@@ -316,6 +316,25 @@ actor ImsgClient {
         ]
     }
 
+    /// Normalize iMessage's `text` body for downstream consumers.
+    ///
+    /// `chat.db` stores `U+FFFC` (OBJECT REPLACEMENT CHARACTER) as the
+    /// body of any message whose content isn't text — attachments,
+    /// stickers, embedded link previews, etc. Faithfully forwarding
+    /// that placeholder downstream is ugly UX: webhook receivers see
+    /// `"text": "\ufffc"` and have to know what it means. We strip
+    /// `U+FFFC` (and any surrounding whitespace) and substitute a
+    /// human-readable `[attachment]` token when the result is empty.
+    ///
+    /// Applied to both `text` (message body) and `reply_to_text`
+    /// (parent-message body captured at reply time).
+    private static func friendlyMessageText(_ raw: String) -> String {
+        let stripped = raw
+            .replacingOccurrences(of: "\u{FFFC}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return stripped.isEmpty ? "[attachment]" : stripped
+    }
+
     private static func encodeArray(_ rows: [[String: Any]]) throws -> Data {
         try JSONSerialization.data(withJSONObject: rows, options: [.fragmentsAllowed])
     }
@@ -330,7 +349,7 @@ actor ImsgClient {
             "chat_id": message.chatID,
             "guid": message.guid,
             "sender": message.sender,
-            "text": message.text,
+            "text": friendlyMessageText(message.text),
             "created_at": ISO8601DateFormatter.ms.string(from: message.date),
             "is_from_me": message.isFromMe,
             "service": message.service,
@@ -340,7 +359,7 @@ actor ImsgClient {
             out["sender_name"] = name
         }
         if let replyToGUID = message.replyToGUID { out["reply_to_guid"] = replyToGUID }
-        if let replyToText = message.replyToText { out["reply_to_text"] = replyToText }
+        if let replyToText = message.replyToText { out["reply_to_text"] = friendlyMessageText(replyToText) }
         if let replyToSender = message.replyToSender {
             out["reply_to_sender"] = replyToSender
             if let resolveName, let name = resolveName(replyToSender), !name.isEmpty {

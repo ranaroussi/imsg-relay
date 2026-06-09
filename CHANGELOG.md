@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Message text now substitutes a friendly token for `U+FFFC`.**
+  iMessage uses the Unicode OBJECT REPLACEMENT CHARACTER as the body
+  of any message whose content isn't text (attachments, stickers,
+  embedded link previews, etc). Previously the relay forwarded that
+  placeholder verbatim, so webhook receivers got `"text": "\ufffc"`
+  on attachment messages and `"reply_to_text": "\ufffc"` when
+  replying to one — they had to know the convention to handle it.
+
+  Now `ImsgClient.encode(_:)` runs both fields through a
+  `friendlyMessageText(_:)` helper that strips `U+FFFC` (and
+  surrounding whitespace) and substitutes the literal string
+  `[attachment]` when the result is empty. A real caption like
+  `"check this out 📎"` passes through unchanged; an attachment with
+  no caption becomes `"[attachment]"`.
+
+  Applied to both inbound event payloads and the bulk REST encoders
+  (`/history`, `/search/messages`), so MCP clients calling
+  `imsg_get_history` see the same friendly form.
+
 ### Added
 
 - **Sparkle auto-update release pipeline.** The release workflow now
