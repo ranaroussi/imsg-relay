@@ -27,15 +27,23 @@ final class ContactsResolver: @unchecked Sendable {
         CNContactStore.authorizationStatus(for: .contacts)
     }
 
-    /// Asks the user for Contacts permission. Idempotent — calling
-    /// after a previous grant returns immediately with `true`. After
-    /// a previous deny it returns `false` without re-prompting (TCC
-    /// suppresses the dialog).
+    /// Asks the user for Contacts permission. Always invokes
+    /// `CNContactStore.requestAccess`, even when the current status
+    /// is `.denied` / `.restricted`. That's deliberate: calling
+    /// `requestAccess` is the *only* signal that registers us with
+    /// macOS's TCC framework, which in turn is what makes us show
+    /// up in System Settings → Privacy & Security → Contacts with
+    /// a toggle. Skipping the call when status is non-`.notDetermined`
+    /// (the previous behavior) left users stranded — denied in our
+    /// UI yet invisible in System Settings, with no path back.
+    ///
+    /// The API itself is well-behaved across all states:
+    ///   - `.notDetermined`: prompts the user, returns their choice
+    ///   - `.denied` / `.restricted`: returns `false` immediately
+    ///   - `.authorized` / `.limited`: returns `true` immediately
     @discardableResult
     func requestAccess() async -> Bool {
-        let status = Self.authorizationStatus()
-        if status == .authorized { return true }
-        if status == .denied || status == .restricted { return false }
+        if Self.authorizationStatus() == .authorized { return true }
         return await withCheckedContinuation { cont in
             store.requestAccess(for: .contacts) { granted, error in
                 if let error {

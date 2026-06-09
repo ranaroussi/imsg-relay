@@ -451,6 +451,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ContactsResolver.authorizationStatus()
     }
 
+    /// Self-service escape hatch for users who land in a "denied but
+    /// not visible in System Settings" state. We shell out to
+    /// `/usr/bin/tccutil` which clears TCC's record for our bundle
+    /// ID; the next `requestAccess` then prompts fresh and registers
+    /// us in the Privacy pane.
+    ///
+    /// Notes:
+    ///   - `tccutil reset <SERVICE> <BUNDLE_ID>` does NOT require
+    ///     sudo for apps the user owns. It can no-op (exit status
+    ///     != 0) if there's no existing TCC entry to reset — that's
+    ///     fine and we log-but-ignore.
+    ///   - We `waitUntilExit()` synchronously so the caller can
+    ///     immediately follow up with `requestAccess()` against the
+    ///     freshly-cleared state.
+    ///   - `nonisolated` because the subprocess spawn touches no
+    ///     AppDelegate state and we want to call it from a detached
+    ///     Task to avoid blocking the main actor during waitUntilExit.
+    nonisolated func resetContactsPermissions() {
+        guard let bundleID = Bundle.main.bundleIdentifier else {
+            Log.contacts.error("resetContactsPermissions: missing bundle identifier")
+            return
+        }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        task.arguments = ["reset", "Contacts", bundleID]
+        task.standardOutput = Pipe()
+        task.standardError = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+            Log.contacts.info("tccutil reset Contacts \(bundleID, privacy: .public) → exit \(task.terminationStatus, privacy: .public)")
+        } catch {
+            Log.contacts.error("tccutil reset failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     @objc private func clearDeadEvents() {
         let cleared = queue?.clearDead() ?? 0
         Log.app.info("user cleared \(cleared, privacy: .public) dead events")

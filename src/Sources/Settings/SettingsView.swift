@@ -9,26 +9,27 @@ struct SettingsView: View {
     @State private var justSaved = false
     @State private var contactsStatus: CNAuthorizationStatus = ContactsResolver.authorizationStatus()
     @State private var contactsRequestInFlight = false
+    @State private var showAdvancedPorts = false
 
     var body: some View {
         TabView {
+            outboundTab.tabItem { Label("Outbound", systemImage: "arrow.up.right.circle") }
+            inboundTab.tabItem  { Label("Inbound",  systemImage: "arrow.down.left.circle") }
             generalTab.tabItem  { Label("General",  systemImage: "gear") }
-            networkTab.tabItem  { Label("Network",  systemImage: "network") }
-            statusTab.tabItem   { Label("Status",   systemImage: "info.circle") }
         }
         // Outer window margin so the tab control floats inside the
         // window chrome instead of running edge-to-edge. Native macOS
         // preferences panes do the same.
         .padding(20)
-        .frame(width: 620, height: 540)
+        .frame(width: 620, height: 560)
         .onReceive(NotificationCenter.default.publisher(for: AppConfigStore.didChangeNotification)) { _ in
             config = AppConfigStore.shared.current
         }
     }
 
-    // MARK: - General
+    // MARK: - Outbound
 
-    private var generalTab: some View {
+    private var outboundTab: some View {
         formScreen {
             Section("Relay identity") {
                 LabeledContent("Identifier") {
@@ -37,19 +38,14 @@ struct SettingsView: View {
                 }
                 .help("Sent as server.identifier on every event.")
 
-                LabeledContent("Endpoint URL") {
+                LabeledContent("Webhook URL") {
                     TextField("", text: $config.serverEndpoint, prompt: Text("https://your-server.example.com/imessage"))
                         .textFieldStyle(.roundedBorder)
                 }
-
-                LabeledContent("Bearer token") {
-                    SecureField("", text: $config.bearerToken, prompt: Text("Leave blank to disable auth (dev only)"))
-                        .textFieldStyle(.roundedBorder)
-                }
-                .help("Sent as Authorization: Bearer <token>.")
+                .help("Auth: the bearer token configured on the Inbound tab is sent as Authorization: Bearer <token> on every POST.")
             }
 
-            Section("Inbound stream") {
+            Section("Stream") {
                 Toggle("Include reactions (tapbacks)", isOn: $config.includeReactions)
 
                 Toggle("Backfill missed messages on restart",
@@ -57,94 +53,26 @@ struct SettingsView: View {
                     .help("When on, messages received while iMessage Relay was offline get relayed once it restarts. Off by default so a long quit period doesn't dump multi-day history to your endpoint at once.")
             }
 
-            Section("Contacts") {
-                contactsRow
+            Section("Reliability") {
+                numberRow("Max retry attempts",
+                          value: $config.maxRetryAttempts,
+                          range: 1...64,
+                          width: 60)
+                    .help("After this many failed POSTs the event is parked as 'dead' in the queue (visible in the menu bar). Backoff is exponential: min(60s, 2^attempts).")
             }
         }
     }
 
-    @ViewBuilder
-    private var contactsRow: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(contactsStatusLabel).font(.callout)
-                Text(contactsStatusHelp).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            switch contactsStatus {
-            case .notDetermined:
-                Button(action: requestContactsAccess) {
-                    if contactsRequestInFlight {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text("Grant Access")
-                    }
-                }
-                .disabled(contactsRequestInFlight)
-            case .denied, .restricted:
-                Button("Open Privacy Settings") {
-                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts") {
-                        NSWorkspace.shared.open(url)
-                    }
-                }
-            case .authorized, .limited:
-                Text("Granted").foregroundStyle(.green).font(.callout)
-            @unknown default:
-                EmptyView()
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            contactsStatus = ContactsResolver.authorizationStatus()
-        }
-    }
+    // MARK: - Inbound
 
-    private var contactsStatusLabel: String {
-        switch contactsStatus {
-        case .notDetermined: return "Resolve phone/email handles to contact names"
-        case .denied, .restricted: return "Contacts access denied"
-        case .authorized, .limited: return "Contacts access granted"
-        @unknown default: return "Contacts access (unknown state)"
-        }
-    }
-
-    private var contactsStatusHelp: String {
-        switch contactsStatus {
-        case .notDetermined:
-            return "When granted, inbound events carry a sender_name field (and reply_to_sender_name) resolved from your Contacts."
-        case .denied, .restricted:
-            return "Inbound events will continue to carry the raw handle (phone number or email) in sender. Open System Settings to enable Contacts for iMessage Relay."
-        case .authorized, .limited:
-            return "Inbound events now carry sender_name resolved from Contacts. Editing a card invalidates the in-memory cache automatically."
-        @unknown default:
-            return ""
-        }
-    }
-
-    private func requestContactsAccess() {
-        guard let delegate = NSApp.delegate as? AppDelegate else { return }
-        contactsRequestInFlight = true
-        Task {
-            _ = await delegate.requestContactsAccess()
-            await MainActor.run {
-                contactsStatus = ContactsResolver.authorizationStatus()
-                contactsRequestInFlight = false
-            }
-        }
-    }
-
-    // MARK: - Network
-
-    private var networkTab: some View {
+    private var inboundTab: some View {
         formScreen {
-            Section("Ports") {
-                numberRow("Local API port",
-                          value: $config.localAPIPort,
-                          range: 1024...65535,
-                          width: 90)
-                numberRow("MCP port",
-                          value: $config.mcpPort,
-                          range: 1024...65535,
-                          width: 90)
+            Section("Auth") {
+                LabeledContent("Bearer token") {
+                    SecureField("", text: $config.bearerToken, prompt: Text("Leave blank to disable auth (dev only)"))
+                        .textFieldStyle(.roundedBorder)
+                }
+                .help("Required on incoming local API + MCP HTTP calls when set, and also sent as Authorization: Bearer <token> on outbound webhook POSTs. One secret, two directions.")
             }
 
             Section("Cloudflare Tunnel") {
@@ -194,12 +122,191 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Reliability") {
-                numberRow("Max retry attempts",
-                          value: $config.maxRetryAttempts,
-                          range: 1...64,
-                          width: 60)
+            Section {
+                DisclosureGroup(isExpanded: $showAdvancedPorts) {
+                    numberRow("Local API port",
+                              value: $config.localAPIPort,
+                              range: 1024...65535,
+                              width: 90)
+                        .help("HTTP port the local API binds to. Cloudflared tunnels this port.")
+                    numberRow("MCP port",
+                              value: $config.mcpPort,
+                              range: 1024...65535,
+                              width: 90)
+                        .help("Port the MCP HTTP transport binds to. Defaults rarely need changing.")
+                } label: {
+                    Text("Advanced — local ports").font(.callout)
+                }
             }
+        }
+    }
+
+    // MARK: - General
+
+    private var generalTab: some View {
+        formScreen {
+            Section("Contacts") {
+                contactsRow
+            }
+
+            Section("Permissions") {
+                permissionRow(
+                    "Full Disk Access",
+                    detail: "Required to read ~/Library/Messages/chat.db."
+                )
+                permissionRow(
+                    "Automation → Messages",
+                    detail: "Required to send messages via Messages.app. Prompted on first send."
+                )
+            }
+
+            Section("About") {
+                LabeledContent("Version", value: Self.shortVersion())
+                LabeledContent("Build",   value: Self.buildNumber())
+                LabeledContent("Bundle",  value: Bundle.main.bundleIdentifier ?? "—")
+                copyrightRow
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var contactsRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(contactsStatusLabel).font(.callout)
+                    Text(contactsStatusHelp).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                switch contactsStatus {
+                case .notDetermined:
+                    Button(action: requestContactsAccess) {
+                        if contactsRequestInFlight {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("Grant Access")
+                        }
+                    }
+                    .disabled(contactsRequestInFlight)
+                case .denied, .restricted:
+                    EmptyView()
+                case .authorized, .limited:
+                    Text("Granted").foregroundStyle(.green).font(.callout)
+                @unknown default:
+                    EmptyView()
+                }
+            }
+
+            // For .denied / .restricted we surface BOTH escape hatches
+            // on a second row: jumping the user to System Settings
+            // (where the toggle lives once we're registered) AND a
+            // self-service "Reset & Re-request" that runs `tccutil`
+            // for our bundle ID and immediately re-asks. The second
+            // button is the one that recovers from the nasty stale-
+            // signature case where we're denied-in-our-UI but
+            // invisible in the Privacy pane.
+            if contactsStatus == .denied || contactsStatus == .restricted {
+                HStack(spacing: 8) {
+                    Spacer()
+                    Button("Open System Settings") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                    Button(action: resetAndRerequestContactsAccess) {
+                        if contactsRequestInFlight {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("Reset & Re-request")
+                        }
+                    }
+                    .disabled(contactsRequestInFlight)
+                    .help("Clears the macOS permission record for this app and immediately re-asks. Use this if the app isn't shown in System Settings → Privacy & Security → Contacts.")
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            contactsStatus = ContactsResolver.authorizationStatus()
+        }
+    }
+
+    private var contactsStatusLabel: String {
+        switch contactsStatus {
+        case .notDetermined: return "Resolve phone/email handles to contact names"
+        case .denied, .restricted: return "Contacts access denied"
+        case .authorized, .limited: return "Contacts access granted"
+        @unknown default: return "Contacts access (unknown state)"
+        }
+    }
+
+    private var contactsStatusHelp: String {
+        switch contactsStatus {
+        case .notDetermined:
+            return "When granted, inbound events carry a sender_name field (and reply_to_sender_name) resolved from your Contacts."
+        case .denied, .restricted:
+            return "Inbound events will continue to carry the raw handle (phone number or email) in sender. If the app isn't listed in System Settings, use 'Reset & Re-request' to recover."
+        case .authorized, .limited:
+            return "Inbound events now carry sender_name resolved from Contacts. Editing a card invalidates the in-memory cache automatically."
+        @unknown default:
+            return ""
+        }
+    }
+
+    private func requestContactsAccess() {
+        guard let delegate = NSApp.delegate as? AppDelegate else { return }
+        contactsRequestInFlight = true
+        Task {
+            _ = await delegate.requestContactsAccess()
+            await MainActor.run {
+                contactsStatus = ContactsResolver.authorizationStatus()
+                contactsRequestInFlight = false
+            }
+        }
+    }
+
+    /// Two-step recovery: shell out to `tccutil` to clear any stale
+    /// TCC record for our bundle ID, then immediately re-issue
+    /// `requestAccess` so the system prompt fires and we get
+    /// registered in the Privacy pane.
+    private func resetAndRerequestContactsAccess() {
+        guard let delegate = NSApp.delegate as? AppDelegate else { return }
+        contactsRequestInFlight = true
+        Task {
+            await Task.detached { delegate.resetContactsPermissions() }.value
+            // Tiny pause to let TCC settle the reset before re-asking;
+            // without it CNContactStore can briefly return the cached
+            // pre-reset value.
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            _ = await delegate.requestContactsAccess()
+            await MainActor.run {
+                contactsStatus = ContactsResolver.authorizationStatus()
+                contactsRequestInFlight = false
+            }
+        }
+    }
+
+    private func permissionRow(_ title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "lock.shield")
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).fontWeight(.medium)
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var copyrightRow: some View {
+        HStack(spacing: 6) {
+            Text("Copyright © Ran Aroussi.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Link("View on GitHub",
+                 destination: URL(string: "https://github.com/ranaroussi/imsg-relay")!)
+                .font(.caption)
+            Spacer()
         }
     }
 
@@ -311,61 +418,6 @@ struct SettingsView: View {
                 ProgressView().controlSize(.small)
                 Text(tunnel.isRunning ? "Connecting to trycloudflare.com…" : "Starting cloudflared…")
                     .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    // MARK: - Status
-
-    private var statusTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                GroupBox("Permissions") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        permissionRow(
-                            "Full Disk Access",
-                            detail: "Required to read ~/Library/Messages/chat.db."
-                        )
-                        permissionRow(
-                            "Automation → Messages",
-                            detail: "Required to send messages via Messages.app. Prompted on first send."
-                        )
-                        permissionRow(
-                            "Contacts",
-                            detail: "Optional. Resolves phone numbers / emails to contact names on inbound events."
-                        )
-                    }
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                GroupBox("About") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        LabeledContent("Version", value: Self.shortVersion())
-                        LabeledContent("Build",   value: Self.buildNumber())
-                        LabeledContent("Bundle",  value: Bundle.main.bundleIdentifier ?? "—")
-                    }
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                Text("Permission prompts come from macOS, not from iMessage Relay. The app will sit idle until they are granted.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 4)
-            }
-            .padding(20)
-        }
-    }
-
-    private func permissionRow(_ title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "lock.shield")
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).fontWeight(.medium)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
             }
         }
     }

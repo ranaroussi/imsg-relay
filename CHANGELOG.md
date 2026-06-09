@@ -9,7 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Settings reorganized into three tabs: Outbound, Inbound, General.**
+  Replaces the previous General/Network/Status layout. New mapping:
+    - **Outbound** — webhook URL + identifier, stream toggles
+      (reactions, backfill), reliability (max retry attempts, moved
+      here from Network where it didn't belong).
+    - **Inbound** — bearer token (used both as the auth header on
+      outbound webhook POSTs AND required on incoming local API /
+      MCP calls — one secret, two directions), Cloudflare Tunnel
+      config, and a collapsed "Advanced" disclosure for the local
+      API + MCP ports that rarely need touching.
+    - **General** — Contacts grant/reset, the Permissions overview
+      (Full Disk Access + Automation → Messages), and About
+      (version, build, bundle ID, copyright + repo link).
+
 ### Fixed
+
+- **Contacts permission: self-service recovery from the
+  "denied-but-invisible-in-System-Settings" stalemate.** Two changes:
+    1. `ContactsResolver.requestAccess` no longer short-circuits when
+       the current status is `.denied`/`.restricted`. It now always
+       invokes `CNContactStore.requestAccess`, which is the *only*
+       call that causes macOS to register the app in System Settings
+       → Privacy & Security → Contacts. Previously, users who
+       declined the first prompt (or who inherited a stale TCC entry
+       from a prior signed build) had no path back: our UI said
+       "denied" but the Privacy pane had no toggle for the app.
+    2. A new "Reset & Re-request" button in the Contacts section of
+       Settings shells out to `/usr/bin/tccutil reset Contacts
+       <bundle-id>` (no sudo needed for user-owned apps) and
+       immediately re-invokes `requestAccess`. This recovers the
+       "denied + missing from Privacy pane" state in one click —
+       useful when two builds of the same bundle ID coexist on the
+       system (e.g. a dev binary in the project folder alongside the
+       notarized DMG in /Applications) and confuse TCC's signature
+       matcher.
 
 - **`callback_url` and absolute attachment URLs now populated
   immediately at boot in named-tunnel mode.** Previously
