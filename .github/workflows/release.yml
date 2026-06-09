@@ -79,7 +79,7 @@ jobs:
           if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ]; then
             VERSION="0.0.0-dev"
           fi
-          BUILD_NUMBER="$(git rev-list --count HEAD)"
+          BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' src/Info.plist)"
           echo "version=$VERSION"             >> "$GITHUB_OUTPUT"
           echo "build_number=$BUILD_NUMBER"   >> "$GITHUB_OUTPUT"
 
@@ -271,7 +271,7 @@ jobs:
         id: meta
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
-          BUILD_NUMBER="$(git rev-list --count HEAD)"
+          BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' src/Info.plist)"
           echo "version=$VERSION"             >> "$GITHUB_OUTPUT"
           echo "build_number=$BUILD_NUMBER"   >> "$GITHUB_OUTPUT"
 
