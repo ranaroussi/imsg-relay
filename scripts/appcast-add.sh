@@ -62,10 +62,15 @@ if [ -z "$private_key_path" ] && [ -z "${SPARKLE_ED_PRIVATE_KEY:-}" ]; then
     exit 1
 fi
 
-# Locate Sparkle's sign_update binary. It ships in the same bundle as
-# generate_keys, so we re-use the same search path as sparkle-keygen.sh.
+# Locate Sparkle's sign_update binary. Sparkle is distributed through
+# SwiftPM as a binary .xcframework artifact, with the maintainer
+# helpers under .build/artifacts/sparkle/Sparkle/bin/. The bundle /
+# framework paths are legacy fallbacks in case Sparkle ever ships in
+# the older `Sparkle_Sparkle.bundle` shape again.
 SIGN_UPDATE=""
 for candidate in \
+    "$PROJECT_DIR/src/.build/artifacts/sparkle/Sparkle/bin/sign_update" \
+    "$PROJECT_DIR/src/.build/checkouts/Sparkle/bin/sign_update" \
     "$PROJECT_DIR/src/.build/release/Sparkle_Sparkle.bundle/Contents/Resources/sign_update" \
     "$PROJECT_DIR/src/.build/debug/Sparkle_Sparkle.bundle/Contents/Resources/sign_update" \
     "$PROJECT_DIR/src/.build/release/Sparkle.framework/Versions/B/Resources/sign_update" \
@@ -78,7 +83,8 @@ do
 done
 
 if [ -z "$SIGN_UPDATE" ]; then
-    echo "couldn't find Sparkle's sign_update binary — build the project first" >&2
+    echo "couldn't find Sparkle's sign_update binary — run 'cd src && swift build -c release' first" >&2
+    echo "expected: src/.build/artifacts/sparkle/Sparkle/bin/sign_update" >&2
     exit 1
 fi
 
