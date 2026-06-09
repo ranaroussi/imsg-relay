@@ -8,5 +8,16 @@
     <true/>
     <key>com.apple.security.automation.apple-events</key>
     <true/>
+    <!--
+      Required for CNContactStore.requestAccess to succeed under
+      Hardened Runtime. Without this, tccd refuses to prompt the
+      user and the API returns CNError code 100 (Access Denied)
+      immediately. Note Apple's naming inconsistency: the
+      entitlement key uses the legacy "addressbook" identifier
+      even though the framework is named Contacts.
+      Docs: https://developer.apple.com/documentation/bundleresources/entitlements/com_apple_security_personal-information_addressbook
+    -->
+    <key>com.apple.security.personal-information.addressbook</key>
+    <true/>
 </dict>
 </plist>
