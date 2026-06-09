@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Named-tunnel docs + Settings UX rewritten to make the
+  CF dashboard steps impossible to miss.** The connector token alone
+  doesn't authorize the app to create DNS records or change tunnel
+  ingress rules — that's a deliberate CF credential split that bit
+  the initial setup flow. To address it without expanding the app's
+  privilege surface:
+  - README's "Setting up a named tunnel" section restructured with
+    an explicit prerequisite checklist, a callout explaining *why*
+    the dashboard steps are necessary (the credential split), each
+    of the 5 steps now annotated with "what happens here", and a
+    `dig`/`curl` verification recipe at the end.
+  - Settings UI in named mode now shows an inline pre-flight panel
+    above the token + hostname fields, walking through the three
+    dashboard steps with the "this is where DNS gets created" line
+    highlighted, and direct links to the CF dashboard + the full
+    README walkthrough.
+  - TROUBLESHOOTING gains a top-billed entry for the exact symptom
+    ("I pasted token + hostname but `dig` returns nothing") with a
+    60-second fix recipe.
+
 ### Added
 
 - **Named Cloudflare Tunnel mode.** Settings → Network → Cloudflare

@@ -107,31 +107,99 @@ iMessage Relay can front the local API + MCP with the Cloudflare edge in two way
 
 Both modes emit the same `tunnel.connected` / `tunnel.disconnected` / `tunnel.changed` events. The `server.callback_url` on every event always reflects the current public URL — `*.trycloudflare.com` in free mode, `https://<your-hostname>` in named mode.
 
-#### Setting up a named tunnel (one-time)
+#### Setting up a named tunnel
 
-> **You don't need to pre-create the subdomain DNS record.** Cloudflare creates the CNAME for you at step 5 below when you add the Public Hostname. The only DNS prerequisite is that the **apex domain** (`yourcompany.com`) is already on Cloudflare — i.e., its nameservers point at CF and the zone is active.
+iMessage Relay does **not** create the tunnel or DNS records on Cloudflare for you — the connector token you'll paste into the app is a low-privilege "worker badge" that only authorizes `cloudflared` to serve traffic, not to modify your account. You'll do three things in the Cloudflare dashboard (~3 minutes total), then two things in iMessage Relay.
 
-1. Make sure your domain is on Cloudflare (any plan, including free). If it isn't yet: CF dashboard → Add a site → change your registrar's nameservers to the two CF gives you → wait for the zone to go active.
-2. Go to **[Zero Trust dashboard](https://one.dash.cloudflare.com/) → Networks → Tunnels → Create a tunnel**.
-3. Pick the **Cloudflared** connector type, name it (e.g. `imsg-relay-my-mac`), and continue.
-4. On the **Install and run a connector** step, **copy the long connector token** (starts with `eyJh…`). You don't actually need to run the install command CF shows — iMessage Relay's bundled `cloudflared` will use the token directly.
-5. On the **Public Hostnames** step, add a route:
-    - **Subdomain:** `mcp` (or whatever you like — it doesn't have to exist in DNS yet, CF will create it)
+> **Why can't the app do all of this from just the token?**
+>
+> The connector token is intentionally scoped to "register as a worker for this tunnel" — it can't create DNS records, can't change which hostname routes to which tunnel, can't read your zone list. Those authorities live on a different credential type (an API token or `cert.pem` from `cloudflared tunnel login`). CF designed it this way so you can deploy connectors to many machines without giving any of them the ability to reconfigure your network.
+>
+> So the dashboard steps below — especially **step 4** — are the part where you, with your account-owner privileges, tell Cloudflare *"route `imsg.yourcompany.com` to this tunnel and create the DNS for it."* The app then runs the connector against that already-configured tunnel.
+
+**Prerequisite checklist:**
+
+- [ ] A domain on Cloudflare (any plan, including free). If you don't have one yet: CF dashboard → Add a site → switch your registrar's nameservers to the two CF gives you → wait for the zone to go active. You can verify with `dig +short NS yourcompany.com` — it should return `*.ns.cloudflare.com`.
+- [ ] iMessage Relay open with the Settings window ready
+
+---
+
+**In the Cloudflare dashboard (one-time):**
+
+**Step 1 — Create the tunnel object**
+
+1. Go to **[Zero Trust dashboard](https://one.dash.cloudflare.com/) → Networks → Tunnels**
+2. Click **Create a tunnel**
+3. Pick the **Cloudflared** connector type, click **Next**
+4. Name it (e.g. `imsg-relay-my-mac`), click **Save tunnel**
+
+**Step 2 — Copy the connector token**
+
+The next page is titled **"Install and run a connector."** It shows you an install command for various OSes — **ignore the command itself**. Look at the bottom of the command for the long token string starting with `eyJh…`. Copy just that token. Keep this page open or paste the token somewhere safe.
+
+(iMessage Relay has its own bundled `cloudflared`, so you don't need to install or run anything from this page — you just need the token.)
+
+Click **Next** to proceed to step 3.
+
+**Step 3 — Add a Public Hostname  ← THIS IS WHERE DNS GETS CREATED**
+
+This is the step that most often gets missed and is the difference between "tunnel connects but the URL returns nothing" and "tunnel works." Don't skip it.
+
+You're now on the **Route traffic** page (also reachable later via Tunnels → your tunnel → **Public Hostnames** tab).
+
+1. Click **Add a public hostname**
+2. Fill in:
+    - **Subdomain:** the prefix you want, e.g. `imsg` or `mcp`. Doesn't have to exist in DNS — CF will create the record.
     - **Domain:** pick your CF-managed domain from the dropdown
-    - **Service:** `HTTP`
-    - **URL:** `localhost:7878` (or whatever your local API port is — must match Settings → Network → Local API port)
+    - **Path:** *leave empty*
+    - **Service type:** `HTTP`
+    - **URL:** `localhost:7878` (must match iMessage Relay → Settings → Network → **Local API port**)
+3. Click **Save hostname**
 
-   When you click Save, CF automatically creates a proxied CNAME `mcp.yourcompany.com → <tunnel-uuid>.cfargotunnel.com` in your DNS zone. You can verify it after the fact under the regular CF dashboard → DNS → Records.
+When you save, two things happen on Cloudflare's side:
 
-   *Gotcha:* if a conflicting `A`, `AAAA`, or `CNAME` record for that exact hostname already exists (or it's bound to a Worker / Pages site / Email Routing rule), CF will refuse the auto-create and show an error. Delete the conflicting record first, then retry.
+1. The tunnel's **ingress configuration** gains a rule: *"if traffic comes in for `imsg.yourcompany.com`, route it through this tunnel to `localhost:7878`."*
+2. A **proxied CNAME** record is created in your zone: `imsg.yourcompany.com → <tunnel-uuid>.cfargotunnel.com`.
 
-6. In iMessage Relay → Settings → Network → Cloudflare Tunnel:
-    - Switch **Mode** to **Named (your own domain)**
-    - Paste the **Tunnel token**
-    - Paste the **Public hostname** (e.g. `mcp.yourcompany.com` — bare host, no `https://` needed, we add it)
-    - Click **Save**
+You can verify the CNAME under the regular CF dashboard → your zone → **DNS → Records**, or with `dig +short imsg.yourcompany.com` — it should resolve within seconds.
 
-The tunnel will stop and restart automatically when you save. The Settings → Network → Public URL row will show `https://mcp.yourcompany.com` once the connector establishes its four outbound connections to the CF edge (typically 2–5 seconds).
+*Gotcha:* if a conflicting `A`, `AAAA`, or `CNAME` record for that exact hostname already exists (or it's bound to a Worker / Pages site / Email Routing rule), CF refuses the auto-create with an error like *"An A, AAAA, or CNAME record with that host already exists."* Delete the conflicting record in DNS → Records, then re-save the Public Hostname.
+
+---
+
+**In iMessage Relay:**
+
+**Step 4 — Paste credentials**
+
+Open Settings → Network → Cloudflare Tunnel.
+
+1. Check **Enable tunnel** (if it isn't already)
+2. Set **Mode** to **Named (your own domain)**
+3. **Tunnel token:** paste the `eyJh…` string from step 2
+4. **Public hostname:** type the full hostname you set up in step 3, e.g. `imsg.yourcompany.com` (bare host, no `https://` — the app adds the scheme)
+5. Click **Save**
+
+**Step 5 — Verify**
+
+The tunnel stops + restarts automatically when you save. Within ~5 seconds the **Public URL** row in Settings → Network should show `https://imsg.yourcompany.com`.
+
+Sanity-check from a terminal:
+
+```bash
+# DNS resolves (was created in step 3)
+dig +short imsg.yourcompany.com
+# Expected: <tunnel-uuid>.cfargotunnel.com.
+
+# Tunnel is routing
+curl -sS https://imsg.yourcompany.com/health
+# Expected: {"ok":true,...} or similar — your relay's health JSON
+
+# Bearer auth works through the tunnel
+curl -sS -H "Authorization: Bearer YOUR_TOKEN" https://imsg.yourcompany.com/status | jq
+# Expected: {"identifier":"...","tunnel_url":"https://imsg.yourcompany.com",...}
+```
+
+If `dig` returns nothing, you skipped or misconfigured step 3 — go back to the Public Hostnames tab in the CF dashboard. See [TROUBLESHOOTING → Named tunnel won't connect](docs/TROUBLESHOOTING.md#named-tunnel-wont-connect) for the full debug recipe.
 
 #### Switching modes
 

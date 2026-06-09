@@ -240,6 +240,53 @@ Settings → Network → Cloudflare Tunnel → Mode → "Named (your own
 domain)". See [Tunnel modes in the README](../README.md#tunnel-modes)
 for the CF dashboard setup walkthrough.
 
+### Named tunnel: I pasted token + hostname but `dig` returns nothing
+
+This is the most common named-tunnel pitfall and it's not a bug — it's
+the credential-split that's baked into how Cloudflare separates
+"can serve traffic" from "can configure routing." Quick recap:
+
+- **Connector token** (the `eyJh…` you pasted) authorizes `cloudflared`
+  to register as a worker for a tunnel. It can connect and serve, but
+  it **cannot** create DNS records or change which hostname routes to
+  which tunnel.
+- **Public Hostname configuration** (the dashboard step you may have
+  skipped) is where Cloudflare actually creates the DNS CNAME and the
+  ingress rule that says "route `imsg.yourcompany.com` to this tunnel."
+
+So if you typed a hostname into iMessage Relay but never went to the
+dashboard's **Public Hostnames** tab to add a route for that exact
+hostname, here's the typical experience:
+
+- `cloudflared` connects fine (Settings shows the configured hostname,
+  log shows `Registered tunnel connection`)
+- But `dig +short imsg.yourcompany.com` returns nothing
+- And `curl https://imsg.yourcompany.com/health` fails with
+  `Could not resolve host`
+
+**Fix (60 seconds):**
+
+1. Cloudflare Zero Trust dashboard → **Networks → Tunnels → click your tunnel**
+2. **Public Hostnames** tab → **Add a public hostname**
+3. Subdomain: whatever you typed into iMessage Relay (e.g. `imsg`)
+4. Domain: pick your CF-managed domain from the dropdown
+5. Service type: `HTTP`
+6. URL: `localhost:<your-local-API-port>` (Settings → Network → Local API port — usually `localhost:7878`)
+7. Save
+
+CF creates the proxied CNAME automatically. Within ~5 seconds:
+
+```bash
+dig +short imsg.yourcompany.com
+# Expected: <some-uuid>.cfargotunnel.com.
+
+curl -sS https://imsg.yourcompany.com/health
+# Expected: 200 OK
+```
+
+If `dig` is still empty after a minute, the auto-create failed —
+usually because a conflicting record exists. See the next section.
+
 ### Named tunnel won't connect
 
 You picked **Named** mode in Settings, saved, but the Public URL row

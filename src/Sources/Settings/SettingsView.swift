@@ -89,23 +89,21 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
 
                     case .named:
+                        namedTunnelPreflight
+                            .padding(.top, 4)
+
                         LabeledContent("Tunnel token") {
-                            SecureField("eyJh… (paste from Cloudflare Zero Trust dashboard)", text: $config.tunnelToken)
+                            SecureField("eyJh… (from CF dashboard, step 2)", text: $config.tunnelToken)
                                 .textFieldStyle(.roundedBorder)
                                 .frame(minWidth: 280)
                         }
 
                         LabeledContent("Public hostname") {
-                            TextField("mcp.yourcompany.com", text: $config.tunnelHostname)
+                            TextField("imsg.yourcompany.com (from CF dashboard, step 3)", text: $config.tunnelHostname)
                                 .textFieldStyle(.roundedBorder)
                                 .frame(minWidth: 280)
                                 .disableAutocorrection(true)
                         }
-
-                        Text("Use this mode when your MCP client or webhook receiver needs a stable URL it can hardcode. Create a tunnel under **Zero Trust → Networks → Tunnels** in the Cloudflare dashboard, point the public hostname at `http://localhost:\(config.localAPIPort)`, then paste the connector token here.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
 
                         if config.tunnelToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                             || config.tunnelHostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -157,6 +155,49 @@ struct SettingsView: View {
                     .labelsHidden()
             }
         }
+    }
+
+    /// Pre-flight checklist + collapsible walkthrough that sits above
+    /// the token + hostname fields in named mode. The point is to make
+    /// it impossible to miss the Cloudflare-dashboard steps — the
+    /// connector token alone doesn't create DNS records or routing
+    /// rules, and that nuance has bitten enough setups to deserve
+    /// inline real estate.
+    @ViewBuilder
+    private var namedTunnelPreflight: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Complete these in the Cloudflare dashboard first:",
+                  systemImage: "info.circle")
+                .font(.caption.weight(.semibold))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("1. **Zero Trust → Networks → Tunnels → Create a tunnel**")
+                Text("2. Copy the connector token (`eyJh…`)")
+                Text("3. **Public Hostnames → Add a public hostname**")
+                Text("    • Subdomain + your domain")
+                Text("    • Service: HTTP, URL: `localhost:\(config.localAPIPort)`")
+                Text("    *← this step creates the DNS record. Skipping it means the tunnel connects but no traffic reaches your Mac.*")
+                    .foregroundStyle(.orange)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.leading, 22)
+
+            HStack(spacing: 12) {
+                Link("Open Cloudflare dashboard",
+                     destination: URL(string: "https://one.dash.cloudflare.com/")!)
+                    .font(.caption)
+                Link("Full walkthrough (README)",
+                     destination: URL(string: "https://github.com/ranaroussi/imsg-relay/blob/main/README.md#setting-up-a-named-tunnel")!)
+                    .font(.caption)
+            }
+            .padding(.leading, 22)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.secondary.opacity(0.08))
+        )
     }
 
     @ViewBuilder
