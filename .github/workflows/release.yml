@@ -29,8 +29,32 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app || true
+      - name: Select Xcode 16.x (Swift 6 toolchain)
+        # Package.swift declares swift-tools-version: 6.0 — needs Xcode
+        # 16.x. The macos-14 runner image's default is Xcode 15.4
+        # (Swift 5.10), which trips `error: package is using Swift
+        # tools version 6.0.0 but the installed version is 5.10.0`.
+        #
+        # Pick the highest Xcode_16* present so we ride the runner
+        # image's upgrades automatically (today 16.2; tomorrow 16.3+).
+        # macOS 14 runners are deprecating in late 2026 — at some
+        # point we'll want to switch runs-on to macos-15, which ships
+        # 16.x natively.
+        run: |
+          xcode_path=""
+          for candidate in $(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -rV); do
+            if [ -d "$candidate" ]; then
+              xcode_path="$candidate"
+              break
+            fi
+          done
+          if [ -z "$xcode_path" ]; then
+            echo "::error::No Xcode 16.x found on the runner. Available Xcodes:"
+            ls -d /Applications/Xcode*.app 2>/dev/null || echo "(none)"
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode_path"
+          echo "Selected: $xcode_path"
 
       - name: Show Swift version
         run: swift --version
