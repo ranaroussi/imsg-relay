@@ -89,12 +89,35 @@ final class MCPService {
                     return .init(content: [.text("{\"queued\":true}")], isError: false)
 
                 case "imsg_send_attachment":
-                    guard let to = Self.stringArg(params, "to"),
-                          let path = Self.stringArg(params, "attachment_path") else {
-                        return Self.err("missing to/attachment_path")
+                    guard let to = Self.stringArg(params, "to") else {
+                        return Self.err("missing to")
                     }
                     let text = Self.stringArg(params, "text") ?? ""
-                    try await imsg.send(to: to, text: text, attachmentPath: path)
+                    let chatID = Self.intArg(params, "chat_id").map(Int64.init)
+
+                    // Two acceptable input shapes:
+                    //   1. content_base64 + filename  — remote agents
+                    //      (the only viable shape over HTTP MCP).
+                    //   2. attachment_path            — legacy / stdio
+                    //      mode where the agent shares this Mac's
+                    //      filesystem.
+                    let finalPath: String
+                    var stagedPath: String? = nil
+                    if let b64 = Self.stringArg(params, "content_base64"),
+                       let rawName = Self.stringArg(params, "filename"),
+                       let bytes = Data(base64Encoded: b64, options: .ignoreUnknownCharacters) {
+                        let safeName = LocalAPIServer.sanitizeFilename(rawName)
+                        let path = try LocalAPIServer.stageOutboundAttachment(data: bytes, filename: safeName)
+                        stagedPath = path
+                        finalPath = path
+                    } else if let path = Self.stringArg(params, "attachment_path") {
+                        finalPath = path
+                    } else {
+                        return Self.err("must provide either (content_base64 + filename) or attachment_path")
+                    }
+                    defer { if let p = stagedPath { try? FileManager.default.removeItem(atPath: p) } }
+
+                    try await imsg.send(to: to, text: text, attachmentPath: finalPath, chatID: chatID)
                     return .init(content: [.text("{\"queued\":true}")], isError: false)
 
                 case "imsg_get_status":
@@ -181,15 +204,22 @@ final class MCPService {
         ),
         Tool(
             name: "imsg_send_attachment",
-            description: "Send a file attachment via Messages.app.",
+            description: """
+                Send a file attachment via Messages.app. Provide the file as base64-encoded \
+                content_base64 + filename (preferred for HTTP/remote MCP clients), or as an \
+                absolute attachment_path on the host Mac (stdio mode only).
+                """,
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
                     "to": .object(["type": .string("string")]),
-                    "attachment_path": .object(["type": .string("string")]),
-                    "text": .object(["type": .string("string")])
+                    "text": .object(["type": .string("string"), "description": .string("Optional caption sent with the file")]),
+                    "chat_id": .object(["type": .string("integer")]),
+                    "content_base64": .object(["type": .string("string"), "description": .string("File bytes, base64-encoded")]),
+                    "filename": .object(["type": .string("string"), "description": .string("Filename with extension, used when content_base64 is provided")]),
+                    "attachment_path": .object(["type": .string("string"), "description": .string("Absolute path on the host Mac (stdio MCP only)")])
                 ]),
-                "required": .array([.string("to"), .string("attachment_path")])
+                "required": .array([.string("to")])
             ])
         ),
         Tool(

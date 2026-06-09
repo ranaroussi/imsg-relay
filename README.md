@@ -303,6 +303,7 @@ When **Enable Cloudflare Tunnel** is on, the public `*.trycloudflare.com` URL ro
 | `GET`  | `/search/messages?query=foo&match=contains` | Full-text search |
 | `GET`  | `/attachments/:message_id/:index` | Fetch an attachment's bytes by message rowid + zero-based index |
 | `POST` | `/send` | Send a text message |
+| `POST` | `/send/attachment` | Send a file attachment (with optional caption) |
 | `POST` | `/mcp`  | MCP JSON-RPC endpoint (see "MCP server" below) |
 
 `POST /send` body:
@@ -316,6 +317,35 @@ When **Enable Cloudflare Tunnel** is on, the public `*.trycloudflare.com` URL ro
 ```
 
 Pass `chat_id` instead of `to` to send to an existing group. `service` can be `auto`, `imessage`, or `sms`.
+
+### Sending attachments
+
+`POST /send/attachment` takes the file's raw bytes in the request body and the metadata in the query string. This avoids the overhead of multipart parsing and lets you pipe any file straight from disk with `--data-binary @file`:
+
+```bash
+curl -X POST 'https://YOUR.tunnel.host/send/attachment?to=%2B14155550123&filename=photo.jpg&text=Caption' \
+  -H 'Authorization: Bearer YOUR_TOKEN' \
+  -H 'Content-Type: image/jpeg' \
+  --data-binary @photo.jpg
+```
+
+Query parameters:
+
+| Param | Required | Notes |
+|-------|----------|-------|
+| `to`        | yes (or use `chat_id`) | Phone number (E.164) or email |
+| `filename`  | yes | Final filename Messages.app sees — must include the extension. URL-encode any spaces (`%20`). The server sanitizes it to a basename, replaces any non-`[A-Za-z0-9.-_()[]+ ]` byte with `_`, and falls back to `attachment-<uuid>` if you pass something pathological. |
+| `text`      | no  | Optional caption sent alongside the attachment. Remember to URL-encode (`%20` for spaces, etc). |
+| `chat_id`   | no  | Numeric chat id from `/chats`, used to target existing group conversations. |
+| `service`   | no  | `auto` (default), `imessage`, or `sms`. |
+
+The body is capped at **100 MB** — beyond that the request is rejected with `400 Bad Request` (Messages.app itself starts behaving poorly above that without iCloud-share fallback). Files are staged into `~/Library/Application Support/imsg-relay/outbound/<uuid8>-<filename>`, handed to Messages.app, and cleaned up immediately after the AppleScript send returns.
+
+Response:
+
+```json
+{ "queued": true, "bytes": 12345, "filename": "photo.jpg" }
+```
 
 ---
 
@@ -484,12 +514,11 @@ All three prompts come from macOS itself. The app sits idle until they are grant
 
 ## Roadmap
 
-- [ ] `POST /send/attachment` multipart endpoint to round out the REST surface
 - [ ] Generate + ship Sparkle ED25519 keypair, automate `appcast.xml` publication from the release workflow
 - [ ] Contacts framework integration: resolve handles to names on outbound events
 - [ ] Settings → Status tab: live permission detection + buttons that jump to each pane
-- [ ] Optional named Cloudflare Tunnel (instead of `trycloudflare.com`) for stable URLs
 - [ ] Tests target (skipped for the v0 slice to ship faster)
+- [ ] Stream attachment uploads instead of buffering them in memory (current cap: 100 MB)
 
 Contributions welcome — open an issue first for anything non-trivial so we can talk through the shape.
 

@@ -247,6 +247,45 @@ curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application
 # Note: first send triggers an "Automation → Messages" macOS prompt. Allow it.
 ```
 
+### Outbound attachments
+
+```bash
+# Send your-own-email a small image (replace mea@aroussi.com with your iCloud handle
+# or +15551234567 with a phone you control).
+#
+# Note: URL-encode spaces in the caption (%20). The query-string parser does
+# not collapse `+` to space.
+curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: image/jpeg' \
+  "$BASE/send/attachment?to=mea@aroussi.com&filename=test.jpg&text=hello%20from%20imsg-relay" \
+  --data-binary @/path/to/test.jpg
+# Expected: {"queued":true,"bytes":<n>,"filename":"test.jpg"}
+
+# Validation paths — all expected to return non-2xx WITHOUT spamming Messages.app:
+curl -sS -o /dev/null -w "%{http_code}\n" -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  "$BASE/send/attachment?filename=t.jpg" --data-binary 'x'        # 400 (missing to)
+curl -sS -o /dev/null -w "%{http_code}\n" -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  "$BASE/send/attachment?to=me@x" --data-binary 'x'                # 400 (missing filename)
+curl -sS -o /dev/null -w "%{http_code}\n" -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  "$BASE/send/attachment?to=me@x&filename=t.jpg" --data-binary ''  # 400 (empty body)
+curl -sS -o /dev/null -w "%{http_code}\n" -X POST \
+  "$BASE/send/attachment?to=me@x&filename=t.jpg" --data-binary 'x' # 401 (no auth)
+```
+
+After a successful send the staging directory should be empty (the
+`defer` block removes the file once `MessageSender.send(...)` returns):
+
+```bash
+ls "$HOME/Library/Application Support/imsg-relay/outbound/"
+# Expected: empty
+```
+
+If you query `/history?chat_id=<your-self-chat>&limit=2` right after,
+you should see two new messages — one with `attachments_count: 1`
+(the file) and one with the caption text, both `is_from_me: true`.
+
 ---
 
 ## 4. MCP — stdio (local Claude Desktop)
@@ -322,6 +361,42 @@ curl -sS -X POST http://127.0.0.1:7878/mcp \
 
 # Expected: { "result": { "content": [{"type":"text","text":"...JSON..."}], "isError":false } }
 ```
+
+### Calling `imsg_send_attachment` with base64 content
+
+The HTTP MCP transport has no body separate from the JSON-RPC payload,
+so the file goes inline as base64. Encode locally and inject into the
+JSON:
+
+```bash
+B64=$(base64 -i /path/to/test.jpg | tr -d '\n')
+
+cat > /tmp/mcp-call.json << EOF
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "imsg_send_attachment",
+    "arguments": {
+      "to": "mea@aroussi.com",
+      "text": "mcp base64 smoke test",
+      "filename": "test.jpg",
+      "content_base64": "$B64"
+    }
+  }
+}
+EOF
+
+curl -sS -X POST "$TUNNEL/mcp" \
+  -H 'Authorization: Bearer '"$TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json' \
+  -d @/tmp/mcp-call.json | jq
+# Expected: result.content[0].text == "{\"queued\":true}"
+```
+
+Then verify via `/history` as in section 3.
 
 ### Through the tunnel
 

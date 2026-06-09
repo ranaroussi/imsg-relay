@@ -12,8 +12,9 @@ import MCP
 ///   GET  /chats/{id}
 ///   GET  /history?chat_id=&limit=&before=&after=
 ///   GET  /search/messages?q=&match=&limit=
-///   POST /send                  { to, text, chat_id?, service?, attachment_url? }
-///   POST /send/attachment       multipart: file + form fields
+///   POST /send                  { to, text, chat_id?, service? }
+///   POST /send/attachment       body=raw bytes, qp: to, filename, text?, chat_id?, service?
+///   POST /mcp                   MCP JSON-RPC over HTTP
 ///
 /// Bearer-token auth is enforced when `AppConfigStore.shared.current.bearerToken`
 /// is non-empty. The relay is meant to sit behind a Cloudflare Tunnel so
@@ -138,6 +139,53 @@ final class LocalAPIServer: @unchecked Sendable {
                 return Self.json(["queued": true])
             }
 
+            // Outbound attachment send.
+            //
+            //   POST /send/attachment?to=<recipient>&text=<caption>
+            //                        &filename=<name.ext>
+            //                        &chat_id=<id>&service=<auto|imessage|sms>
+            //   Body: raw file bytes
+            //   Content-Type: whatever the file actually is (image/jpeg, video/mp4, etc.)
+            //
+            // 100 MB cap matches what Messages.app itself will accept
+            // gracefully without iCloud upload (above that we'd need
+            // streaming + iMessage Sharing infrastructure which isn't
+            // in IMsgCore yet).
+            router.post("/send/attachment") { req, _ -> Response in
+                guard let imsg else { throw HTTPError(.serviceUnavailable) }
+                let qp = req.uri.queryParameters
+                guard let to = qp["to"].map(String.init), !to.isEmpty,
+                      let rawName = qp["filename"].map(String.init), !rawName.isEmpty else {
+                    throw HTTPError(.badRequest)
+                }
+                let filename = Self.sanitizeFilename(rawName)
+                let text = qp["text"].map(String.init) ?? ""
+                let chatID = qp["chat_id"].flatMap { Int64(String($0)) }
+                let service = qp["service"].map(String.init) ?? "auto"
+
+                let buffer = try await req.body.collect(upTo: 100 * 1_048_576) // 100 MB
+                guard buffer.readableBytes > 0 else {
+                    throw HTTPError(.badRequest)
+                }
+                let data = Data(buffer: buffer)
+
+                let stagedPath = try Self.stageOutboundAttachment(data: data, filename: filename)
+                defer { try? FileManager.default.removeItem(atPath: stagedPath) }
+
+                do {
+                    try await imsg.send(to: to, text: text, attachmentPath: stagedPath, chatID: chatID, service: service)
+                } catch {
+                    Log.api.error("send/attachment failed: \(error.localizedDescription, privacy: .public)")
+                    throw HTTPError(.internalServerError)
+                }
+
+                return Self.json([
+                    "queued": true,
+                    "bytes": data.count,
+                    "filename": filename
+                ])
+            }
+
             // MCP over HTTP. The Hummingbird request gets adapted into
             // the SDK's framework-agnostic `MCP.HTTPRequest`, handed to
             // `StatelessHTTPServerTransport`, and the resulting
@@ -192,6 +240,59 @@ final class LocalAPIServer: @unchecked Sendable {
 
     fileprivate static func jsonData(_ string: String) -> Response {
         jsonData(Data(string.utf8))
+    }
+
+    /// Strip any path-traversal pieces and reduce to a basename safe
+    /// to use as the final filename on disk. Empty result is forbidden
+    /// upstream; this only guards against caller-supplied slashes,
+    /// `..`, and the like.
+    static func sanitizeFilename(_ raw: String) -> String {
+        // Pull just the last path component, then strip any null
+        // bytes or control characters that could surprise downstream
+        // shells / AppleScript.
+        let basename = (raw as NSString).lastPathComponent
+        let allowed = CharacterSet.alphanumerics
+            .union(.init(charactersIn: ".-_()[]+ "))
+        var out = String()
+        out.reserveCapacity(basename.count)
+        for scalar in basename.unicodeScalars {
+            if allowed.contains(scalar) {
+                out.unicodeScalars.append(scalar)
+            } else {
+                out.append("_")
+            }
+        }
+        // Collapse the empty / dot-only edge cases.
+        let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed.allSatisfy({ $0 == "." }) {
+            return "attachment-\(UUID().uuidString.prefix(8))"
+        }
+        return trimmed
+    }
+
+    /// Write the inbound bytes to a private staging directory under
+    /// Application Support so `MessageSender` can pick them up. The
+    /// directory is created (with `withIntermediateDirectories: true`)
+    /// if missing. The caller is responsible for deleting the staged
+    /// file once Messages.app has accepted the send — see the `defer`
+    /// in the route handler.
+    static func stageOutboundAttachment(data: Data, filename: String) throws -> String {
+        let fm = FileManager.default
+        let appSupport = try fm.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let staging = appSupport
+            .appendingPathComponent("imsg-relay", isDirectory: true)
+            .appendingPathComponent("outbound", isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+
+        let unique = UUID().uuidString.prefix(8) + "-" + filename
+        let dest = staging.appendingPathComponent(String(unique))
+        try data.write(to: dest, options: .atomic)
+        return dest.path
     }
 
     /// Build a binary response for an attachment: mimeType for

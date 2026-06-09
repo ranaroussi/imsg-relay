@@ -264,6 +264,54 @@ IMsgCore.MessageSender — drives Messages.app via AppleScript
 The first call triggers the macOS Automation → Messages permission
 prompt. After grant, sends complete in ~100-500ms.
 
+### Outbound attachments
+
+Attachments take a near-identical path with one extra step — the file
+has to live on disk before AppleScript can attach it, so we stage it:
+
+```
+Client
+   │  (a) POST /send/attachment?to=&filename=&text=&chat_id=
+   │      Body: raw file bytes
+   │           — or —
+   │  (b) MCP tools/call imsg_send_attachment
+   │      { to, filename, content_base64, ... }
+   ▼
+LocalAPIServer (a)  /  MCPService (b)
+   │
+   ├── sanitizeFilename(rawName)   ← basename only, allows
+   │                                 [A-Za-z0-9.-_()[]+ ], everything
+   │                                 else → `_`; empty/dots → UUID
+   │
+   ├── stageOutboundAttachment(data, name)
+   │      └─ writes to:
+   │         ~/Library/Application Support/imsg-relay/outbound/
+   │         <uuid8>-<sanitized-name>
+   │
+   ▼
+ImsgClient.send(to:, text:, attachmentPath: stagedPath, chatID:)
+   │
+   ▼
+IMsgCore.MessageSender — first sends the optional caption text,
+                         then attaches the file via AppleScript
+   │
+   ▼
+defer { try? FileManager.default.removeItem(atPath: stagedPath) }
+                         ← cleanup runs on success AND error
+```
+
+Body cap: **100 MB**. Above that, `req.body.collect(upTo:)` throws and
+the route returns `400 Bad Request` — we'd need to plumb iCloud
+sharing fallback into IMsgCore for bigger files. The MCP base64 shape
+inherits the same cap, since the staged file is the same on-disk
+artifact either way.
+
+The reason both paths exist: HTTP REST is the natural fit for
+backend code that already has a file on disk; the MCP `content_base64`
+shape is the only viable channel over HTTP MCP, where the agent has
+no view of the host Mac's filesystem. Stdio MCP can keep using
+`attachment_path` to skip the encoding overhead.
+
 ---
 
 ## 7. MCP — two transports, one tool catalog

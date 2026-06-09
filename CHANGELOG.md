@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Outbound attachments via REST and MCP.** Two new surfaces close
+  the loop on the attachment story (we already streamed inbound
+  attachments out via `/attachments/:msg_id/:index`):
+
+  - `POST /send/attachment?to=&filename=&text=&chat_id=&service=` —
+    raw file bytes go in the request body, metadata in the query
+    string. No multipart parser required; you can pipe any file
+    straight from disk with `curl --data-binary @file`. Cap is 100 MB
+    per request (beyond that Messages.app starts misbehaving without
+    iCloud-share fallback, so we reject early).
+  - `imsg_send_attachment` MCP tool now accepts a
+    `content_base64` + `filename` shape in addition to the legacy
+    `attachment_path`. That makes the tool actually usable over HTTP
+    MCP, where the remote agent has no view of the host Mac's file
+    system. Stdio MCP clients can keep using `attachment_path` as
+    before.
+
+  Both paths share the same staging directory
+  (`~/Library/Application Support/imsg-relay/outbound/<uuid8>-<name>`)
+  and the same filename sanitizer (alphanumerics + `.-_()[]+ ` only,
+  collapses path traversal, falls back to `attachment-<uuid>` on
+  pathological inputs). The staged file is deleted in a `defer` block
+  the moment Messages.app's AppleScript send returns, so the directory
+  stays empty between sends.
+
 ### Fixed
 
 - **Named-mode tunnel start was silently broken by argv ordering.**
