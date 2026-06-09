@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MCP testing recipes.** `TESTING.md` now has:
+  - A copy-pasteable "exercise every read-only tool" block that calls
+    `imsg_get_status`, `imsg_list_chats`, `imsg_get_chat`,
+    `imsg_get_history`, `imsg_search_messages` through the tunnel.
+  - A spelled-out FDA gotcha for stdio MCP: the binary inherits the
+    TCC profile of whatever spawns it, so when Claude Desktop is the
+    parent, you have to grant FDA to **Claude Desktop.app** — the
+    menu bar app's FDA grant does not transfer.
+  - A pointer to `examples/claude_desktop_config.json`, a one-file
+    template you can drop straight into Claude's config directory.
+
+  The HTTP MCP transport sidesteps the FDA-twice issue entirely (the
+  menu bar app reads `chat.db` once, then exposes JSON over the
+  tunnel), so we now recommend HTTP MCP as the default for any remote
+  agent and reserve stdio mode for "Claude Desktop on the same Mac".
+
 - **Outbound attachments via REST and MCP.** Two new surfaces close
   the loop on the attachment story (we already streamed inbound
   attachments out via `/attachments/:msg_id/:index`):

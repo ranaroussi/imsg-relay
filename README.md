@@ -399,7 +399,7 @@ Run the same binary with `--mcp` to expose MCP over stdin/stdout instead:
 
 This bypasses AppKit entirely — pure JSON-RPC, no GUI, no menu bar. Different process mode on the same binary.
 
-Wire it into Claude Desktop's `claude_desktop_config.json`:
+Wire it into Claude Desktop's `claude_desktop_config.json` (lives at `~/Library/Application Support/Claude/claude_desktop_config.json`):
 
 ```json
 {
@@ -412,12 +412,18 @@ Wire it into Claude Desktop's `claude_desktop_config.json`:
 }
 ```
 
+Then restart Claude Desktop. Open a new conversation and ask "list my recent iMessage chats" — Claude will pick up the new MCP server and surface the seven tools. A copy-pasteable template lives in [`examples/claude_desktop_config.json`](examples/claude_desktop_config.json).
+
+> **FDA gotcha for stdio mode.** When Claude Desktop spawns the binary, it's *Claude Desktop's* TCC profile that's evaluated against `~/Library/Messages/chat.db`, not the menu bar app's. If you see "iMessage Relay --mcp failed to init: authorization denied (code: 23)" in Claude Desktop's MCP logs, add **Claude Desktop.app** itself to System Settings → Privacy & Security → Full Disk Access. The menu bar app's FDA grant doesn't transfer. (The HTTP path through the tunnel doesn't have this problem — the menu bar app handles the DB read and the tunnel just exposes the result.)
+
 For remote stdio via SSH:
 
 ```bash
 #!/usr/bin/env bash
 exec ssh -T mac '/Applications/iMessage Relay.app/Contents/MacOS/ImsgRelay --mcp'
 ```
+
+(Same FDA caveat: the user account on the remote Mac that the SSH session lands in needs FDA. The cleanest path here is to grant `sshd-keygen-wrapper` or `ssh` FDA, but most setups will hit fewer permission landmines by going through the HTTP transport instead.)
 
 ### Tools exposed
 

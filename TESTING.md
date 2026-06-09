@@ -304,9 +304,18 @@ printf '%s\n%s\n%s\n' \
 # The second one should list all 7 tools (imsg_list_chats, imsg_get_chat, etc.)
 ```
 
+> **If you see `authorization denied (code: 23)`** on stderr it means the
+> shell/terminal running this command does NOT have Full Disk Access.
+> The binary inherits the spawner's TCC profile — your terminal needs
+> to be in System Settings → Privacy & Security → Full Disk Access for
+> the stdio MCP test to read chat.db. Once you're verifying through
+> Claude Desktop, it's *Claude Desktop.app* itself that needs FDA.
+
 ### Claude Desktop wiring
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Copy `examples/claude_desktop_config.json` from the repo into
+`~/Library/Application Support/Claude/claude_desktop_config.json` (or
+merge if you already have one). It looks like:
 
 ```json
 {
@@ -319,12 +328,26 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
-Quit and relaunch Claude Desktop. In a chat, ask:
+Before you restart Claude Desktop:
+
+1. **Grant Claude Desktop FDA.** System Settings → Privacy & Security →
+   Full Disk Access → toggle on **Claude**. Without this you'll see
+   `authorization denied (code: 23)` in Claude's MCP logs and the
+   tool calls will fail.
+2. Fully quit and relaunch Claude Desktop (`Cmd+Q`, not just close).
+
+In a new chat, ask:
 > "List my five most recent iMessage chats."
 
-Claude should call `imsg_list_chats` and reply with the data. Confirm in
-Claude's MCP status panel that `imsg-relay` is connected and all 7 tools
-are listed.
+Claude should call `imsg_list_chats` and reply with the data. Confirm
+in Claude's MCP status panel (Settings → Developer) that `imsg-relay`
+is connected and all 7 tools are listed.
+
+> **Why grant FDA twice?** The menu bar app's FDA grant doesn't transfer
+> to a binary spawned by Claude Desktop, because TCC scopes by the
+> *responsible* code signature, not the spawned process's. The HTTP
+> transport (next section) sidesteps this — the menu bar app reads
+> chat.db, the tunnel just exposes the JSON over the wire.
 
 ---
 
@@ -413,6 +436,36 @@ curl -sS -X POST "$TUNNEL/mcp" \
 
 # Should return the same 7 tools.
 ```
+
+### Exercise every read-only tool in one go
+
+```bash
+TUNNEL="https://YOUR.tunnel.host"
+TOKEN="YOUR_TOKEN"
+
+call() {
+  local id="$1" name="$2" args="$3"
+  curl -sS -X POST "$TUNNEL/mcp" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":$id,\"method\":\"tools/call\",\"params\":{\"name\":\"$name\",\"arguments\":$args}}"
+}
+
+call 1 imsg_get_status '{}'                                    | jq
+call 2 imsg_list_chats '{"limit":3}'                           | jq
+call 3 imsg_get_chat '{"chat_id":2035}'                        | jq
+call 4 imsg_get_history '{"chat_id":2035,"limit":3}'           | jq
+call 5 imsg_search_messages '{"query":"hello","limit":3}'      | jq
+```
+
+Each one should return `result.content[0].text` as a stringified JSON
+blob, and `result.isError` should be `false`.
+
+`imsg_send_message` and `imsg_send_attachment` are covered separately
+in section 3 (`POST /send` and `POST /send/attachment`); they share the
+exact same `ImsgClient.send(...)` pipeline as the MCP tool, so if the
+REST path works the MCP path works.
 
 ### Auth failures should reject cleanly
 
