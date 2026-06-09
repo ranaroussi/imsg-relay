@@ -88,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let queue = try RelayQueue()
             let tunnel = TunnelManager()
             let relay = HTTPRelay(queue: queue, tunnel: tunnel)
-            let imsg  = try ImsgClient(queue: queue, relay: relay)
+            let imsg  = try ImsgClient(queue: queue, relay: relay, tunnel: tunnel)
             tunnel.attach(relay: relay)
 
             // HTTP MCP: a `StatelessHTTPServerTransport` from the SDK

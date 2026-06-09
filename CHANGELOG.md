@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Attachment relay.** Inbound events whose `attachments_count > 0`
+  now carry an `attachments` array with per-file metadata
+  (`filename`, `mime_type`, `served_mime_type`, `uti`, `size`,
+  `is_sticker`, `missing`) plus a `url` (absolute, through the tunnel
+  when up) and `url_path` (relative). A new `GET /attachments/:message_id/:index`
+  endpoint on the local Hummingbird server streams the bytes with the
+  right `Content-Type` and `Content-Disposition` headers, behind the
+  existing bearer-auth middleware. Defensive: the resolved file must
+  live under `~/Library/Messages/Attachments/`, otherwise 404 —
+  guarding against any upstream path-resolution drift.
 - **"Backfill missed messages on restart" toggle** in Settings →
   Inbound stream. Default off — only messages that arrive after the
   app launches are relayed. When on, the watcher resumes from the last

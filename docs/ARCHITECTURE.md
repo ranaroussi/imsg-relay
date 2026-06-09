@@ -155,6 +155,11 @@ ImsgClient.handle(message:)
         ├── if message.isFromMe → emit .messageSent
         │   else                → emit .messageReceived
         │
+        ├── if message.attachmentsCount > 0:
+        │     payload["attachments"] = encodeAttachments(for: message)
+        │     // pulls AttachmentMeta from MessageStore, attaches
+        │     // url (tunnel-absolute when up) + url_path (relative)
+        │
         └── HTTPRelay.relay(type:, payload:)
             │
             ├── Build EventEnvelope (with server.identifier,
@@ -209,6 +214,31 @@ the next restart without losing state.
 `SELECT MAX(ROWID) FROM message`. If the query fails (FDA race, no
 Messages history, …) we fall back to whatever cursor exists — worst
 case is a full backfill on a true first launch, never a crash.
+
+---
+
+### Attachment serving
+
+`LocalAPIServer` exposes `GET /attachments/:message_id/:index` for the
+URLs that go out on inbound events. The handler:
+
+1. Calls `ImsgClient.attachmentBytes(messageID:, index:)`
+2. That calls `MessageStore.attachments(for:, options: AttachmentQueryOptions(convertUnsupported: true))`,
+   indexes into the result, and reads bytes from `convertedPath ?? originalPath`
+3. Defensive: the resolved absolute path must live under
+   `~/Library/Messages/Attachments/` (`NSString.standardizingPath`
+   prefix check). Anything outside → `nil` → 404, never expose existence
+4. Hummingbird `Response` returns 200 OK with `Content-Type` from
+   `served_mime_type ?? mime_type` and a sanitized
+   `Content-Disposition: inline; filename="..."` header
+
+Bearer auth applies — same middleware as the rest of the API.
+
+For very large attachments (videos) the current implementation loads
+the file into memory before responding. The 1 MB body limit on the
+POST routes doesn't apply (this is a GET serving a `byteBuffer`-backed
+response). Streaming the file via Hummingbird's response body API is
+a future optimization.
 
 ---
 

@@ -26,7 +26,7 @@ if args.contains("--mcp") {
         // dummy actor is the simplest way to satisfy the initializer.
         let tunnel = TunnelManager()
         let dummyRelay = HTTPRelay(queue: queue, tunnel: tunnel)
-        imsg = try ImsgClient(queue: queue, relay: dummyRelay)
+        imsg = try ImsgClient(queue: queue, relay: dummyRelay, tunnel: tunnel)
     } catch {
         FileHandle.standardError.write(Data("iMessage Relay --mcp failed to init: \(error.localizedDescription)\n".utf8))
         exit(1)

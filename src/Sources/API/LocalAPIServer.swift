@@ -104,6 +104,28 @@ final class LocalAPIServer: @unchecked Sendable {
                 }
                 return Self.jsonRaw(body, key: "messages")
             }
+
+            // Stream a single attachment by (message_id, index). The
+            // pair is what `data.attachments[i].url_path` on outbound
+            // events points to, so remote endpoints can fetch any file
+            // referenced by a relayed message. Bearer-auth protected.
+            router.get("/attachments/:msg_id/:index") { _, context -> Response in
+                guard let msgRaw = context.parameters.get("msg_id"),
+                      let messageID = Int64(msgRaw),
+                      let idxRaw = context.parameters.get("index"),
+                      let index = Int(idxRaw) else {
+                    throw HTTPError(.badRequest)
+                }
+                guard let imsg else { throw HTTPError(.serviceUnavailable) }
+                guard let result = try await imsg.attachmentBytes(messageID: messageID, index: index) else {
+                    throw HTTPError(.notFound)
+                }
+                return Self.attachmentResponse(
+                    data: result.data,
+                    mimeType: result.servedMime,
+                    filename: result.meta.transferName.isEmpty ? result.meta.filename : result.meta.transferName
+                )
+            }
             router.post("/send") { req, _ -> Response in
                 let body = try await req.body.collect(upTo: 1_048_576) // 1 MB
                 let payload = try JSONSerialization.jsonObject(with: Data(buffer: body)) as? [String: Any] ?? [:]
@@ -170,6 +192,22 @@ final class LocalAPIServer: @unchecked Sendable {
 
     fileprivate static func jsonData(_ string: String) -> Response {
         jsonData(Data(string.utf8))
+    }
+
+    /// Build a binary response for an attachment: mimeType for
+    /// `Content-Type`, friendly filename for `Content-Disposition`
+    /// (so browsers download with the right name and CLI clients see
+    /// it in `curl -OJ`).
+    fileprivate static func attachmentResponse(data: Data, mimeType: String, filename: String) -> Response {
+        var response = Response(status: .ok, body: .init(byteBuffer: ByteBuffer(data: data)))
+        let contentType = mimeType.isEmpty ? "application/octet-stream" : mimeType
+        response.headers[.contentType] = contentType
+        if !filename.isEmpty, let dispositionName = HTTPField.Name("Content-Disposition") {
+            // Sanitize quotes in the filename to keep the header valid.
+            let safe = filename.replacingOccurrences(of: "\"", with: "")
+            response.headers[dispositionName] = "inline; filename=\"\(safe)\""
+        }
+        return response
     }
 
     fileprivate static func intParam(_ req: Request, _ name: String, default fallback: Int) -> Int {

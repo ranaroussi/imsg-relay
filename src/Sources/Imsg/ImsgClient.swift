@@ -17,18 +17,25 @@ actor ImsgClient {
     private let sender: MessageSender
     private let queue: RelayQueue
     private weak var relay: HTTPRelay?
+    /// `nonisolated(unsafe)` matches the pattern in `HTTPRelay` —
+    /// `TunnelManager` is `@unchecked Sendable` and we only read its
+    /// `publicURL`/`isRunning` (both stored properties touched from
+    /// the main thread on lifecycle changes). Used at event-encode
+    /// time to attach absolute attachment URLs.
+    nonisolated(unsafe) private weak var tunnel: TunnelManager?
 
     private var watchTask: Task<Void, Never>?
     private var includeReactions: Bool
 
     static let cursorKey = "imsg.watch.since_rowid"
 
-    init(queue: RelayQueue, relay: HTTPRelay) throws {
+    init(queue: RelayQueue, relay: HTTPRelay, tunnel: TunnelManager? = nil) throws {
         self.store = try MessageStore()
         self.watcher = MessageWatcher(store: self.store)
         self.sender = MessageSender()
         self.queue = queue
         self.relay = relay
+        self.tunnel = tunnel
         self.includeReactions = AppConfigStore.shared.current.includeReactions
     }
 
@@ -128,11 +135,88 @@ actor ImsgClient {
         } else {
             type = .messageReceived
         }
-        // Project to a JSON-safe dict before sending across the actor hop;
-        // `[String: Any]` isn't Sendable but the relay only needs the
-        // value wrapped in `AnyCodable`, which captures everything by value.
-        let payload = AnyCodable(Self.encode(message))
-        relay?.relay(type: type, payload: payload)
+
+        // Compose the JSON payload. Start with the static message
+        // encoder, then enrich with attachment metadata (when present)
+        // so remote endpoints can pull the bytes via the new
+        // `GET /attachments/:msg_id/:index` route.
+        var payload = Self.encode(message)
+        if message.attachmentsCount > 0 {
+            payload["attachments"] = encodeAttachments(for: message)
+        }
+        relay?.relay(type: type, payload: AnyCodable(payload))
+    }
+
+    /// Resolve and serialize a message's attachments into JSON-safe
+    /// dicts for inclusion on outbound events. Each entry carries:
+    ///   - `url`         — absolute URL when the tunnel is up, else absent
+    ///   - `url_path`    — always present; relative path on the local API
+    ///   - `filename`    — friendly name (transfer_name, fallback to filename)
+    ///   - `mime_type`, `uti`, `size`, `is_sticker`, `missing`
+    ///
+    /// The remote endpoint can concatenate `server.callback_url +
+    /// url_path` if it prefers, or just hit `url` directly.
+    private func encodeAttachments(for message: Message) -> [[String: Any]] {
+        let metas = (try? store.attachments(for: message.rowID)) ?? []
+        let base = tunnel?.publicURL
+        return metas.enumerated().map { index, meta -> [String: Any] in
+            let path = "/attachments/\(message.rowID)/\(index)"
+            let friendlyName = meta.transferName.isEmpty ? meta.filename : meta.transferName
+            var entry: [String: Any] = [
+                "url_path": path,
+                "filename": friendlyName,
+                "mime_type": meta.mimeType,
+                "uti": meta.uti,
+                "size": meta.totalBytes,
+                "is_sticker": meta.isSticker,
+                "missing": meta.missing
+            ]
+            if let base, !base.isEmpty {
+                entry["url"] = base + path
+            }
+            if let converted = meta.convertedMimeType, !converted.isEmpty,
+               converted != meta.mimeType {
+                // When IMsgCore converts (e.g., HEIC → JPEG), surface
+                // the served mime so consumers know what `url` will
+                // actually deliver.
+                entry["served_mime_type"] = converted
+            }
+            return entry
+        }
+    }
+
+    /// Read the bytes of a single attachment by message rowid + zero-
+    /// based index. Returns `nil` for unknown messages, out-of-range
+    /// indices, missing files on disk, or paths outside the standard
+    /// `~/Library/Messages/Attachments/` root (defensive against any
+    /// upstream path-resolution drift).
+    func attachmentBytes(messageID: Int64, index: Int) throws -> (data: Data, meta: AttachmentMeta, servedMime: String)? {
+        let metas = try store.attachments(for: messageID, options: AttachmentQueryOptions(convertUnsupported: true))
+        guard index >= 0, index < metas.count else { return nil }
+        let meta = metas[index]
+
+        // Prefer the converted file (e.g., HEIC → JPEG that web
+        // browsers actually render); fall back to the original.
+        let chosenPath = meta.convertedPath ?? meta.originalPath
+        let servedMime = (meta.convertedMimeType?.isEmpty == false ? meta.convertedMimeType : nil) ?? meta.mimeType
+
+        let expanded = (chosenPath as NSString).expandingTildeInPath
+
+        // Defensive root check — never serve anything outside the
+        // Messages attachments folder, no matter what chat.db says.
+        let attachmentsRoot = ((("~/Library/Messages/Attachments/" as NSString).expandingTildeInPath) as NSString).standardizingPath
+        let standardized = (expanded as NSString).standardizingPath
+        guard standardized.hasPrefix(attachmentsRoot) else {
+            Log.imsg.error("attachment refused: \(standardized, privacy: .public) outside attachments root")
+            return nil
+        }
+
+        guard FileManager.default.fileExists(atPath: standardized) else {
+            return nil
+        }
+
+        let data = try Data(contentsOf: URL(fileURLWithPath: standardized))
+        return (data, meta, servedMime)
     }
 
     // MARK: - Public API used by LocalAPIServer / MCPServer

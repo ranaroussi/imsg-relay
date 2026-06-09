@@ -70,6 +70,38 @@ created on next launch.
 Alternatively, click the menu bar's "Clear N dead events" item to
 just clear the dead state — pending events remain queued.
 
+### Attachment URL returns 404
+
+Three possible causes, in order of likelihood:
+
+1. **macOS pruned the attachment from disk.** Messages garbage-collects
+   old attachments aggressively (especially when "Optimize Mac Storage"
+   is on). The chat.db row remains but the file is gone. The event
+   payload will have `attachments[i].missing = true` in this case —
+   check it before fetching.
+2. **Wrong index.** `attachments[0]` and `attachments[1]` are different
+   files. Each message can have multiple attachments; the `url_path`
+   in the payload is authoritative for which one.
+3. **The attachment lives outside `~/Library/Messages/Attachments/`.**
+   We refuse to serve anything outside that root as a defensive measure.
+   Check the log:
+
+   ```bash
+   log show --predicate 'subsystem == "com.imsg-relay.app" && category == "imsg"' \
+     --info --last 5m | grep "attachment refused"
+   ```
+
+   If this fires, the upstream `imsg` AttachmentResolver is returning a
+   path we don't expect — file an issue with the log excerpt.
+
+### Attachment URL returns the wrong content-type
+
+We serve `served_mime_type ?? mime_type`. If the file is a HEIC that
+IMsgCore transcoded to JPEG, the URL will deliver `image/jpeg` bytes
+even though the original `mime_type` in chat.db is `image/heic`. The
+`served_mime_type` field in the event payload tells consumers what
+they'll actually get.
+
 ### Watcher backfilled chat.db history I didn't expect
 
 Check the **"Backfill missed messages on restart"** toggle in Settings

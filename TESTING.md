@@ -119,6 +119,45 @@ curl -sS -H 'Authorization: Bearer dev-token-1234' http://127.0.0.1:7878/stats
 # Expected: {"queued":0,"dead":0}
 ```
 
+**Verifying attachments are relayed:**
+
+Send yourself an iMessage with a photo attached.
+
+```bash
+# Look at the webhook payload — data.attachments should be present
+# with at least one entry containing url + url_path + filename +
+# mime_type + size.
+
+# Pull the attachment directly through the tunnel:
+TUNNEL=$(curl -sS -H "Authorization: Bearer dev-token-1234" \
+  http://127.0.0.1:7878/status | jq -r .tunnel_url)
+ATT_URL=$(... copy the data.attachments[0].url field from your webhook ...)
+curl -sS -H "Authorization: Bearer dev-token-1234" -OJ "$ATT_URL"
+# Saves the file with the friendly transfer_name. Open it — should be
+# the photo you sent.
+
+# Edge cases:
+#   - Out-of-range index returns 404
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer dev-token-1234" \
+  "$TUNNEL/attachments/19592/99"
+# Expected: 404
+
+#   - Unknown message id returns 404
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer dev-token-1234" \
+  "$TUNNEL/attachments/999999999/0"
+# Expected: 404
+
+#   - Without bearer → 401
+curl -sS -o /dev/null -w '%{http_code}\n' "$TUNNEL/attachments/19592/0"
+# Expected: 401
+```
+
+If `data.attachments[i].missing` is `true` on a payload, the file was
+pruned by macOS off the local disk — the URL will 404. That's
+expected and not a bug.
+
 **Verifying `backfillOnRestart` semantics:**
 
 Default (`Backfill missed messages on restart` = OFF):

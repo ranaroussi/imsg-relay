@@ -117,6 +117,52 @@ Event types (`EventType` enum in `src/Sources/Relay/EventEnvelope.swift`):
 
 Your endpoint should respond `2xx` to confirm delivery. `5xx` and `429` trigger a backoff-and-retry; other `4xx` codes park the event as `dead`.
 
+### Attachments
+
+When a message includes attachments, the event payload carries an `attachments` array alongside the existing `attachments_count`. Each entry is metadata plus a URL pointing at the relay's `GET /attachments/:message_id/:index` endpoint:
+
+```json
+{
+  "type": "message.received",
+  "data": {
+    "id": 19592,
+    "guid": "11FD445C-...",
+    "text": "\uFFFC",
+    "attachments_count": 1,
+    "attachments": [
+      {
+        "url":        "https://....trycloudflare.com/attachments/19592/0",
+        "url_path":   "/attachments/19592/0",
+        "filename":   "IMG_1234.HEIC",
+        "mime_type":  "image/heic",
+        "served_mime_type": "image/jpeg",
+        "uti":        "public.heic",
+        "size":       1846291,
+        "is_sticker": false,
+        "missing":    false
+      }
+    ]
+  },
+  "server": { "callback_url": "https://....trycloudflare.com", ... }
+}
+```
+
+Field reference:
+
+| Field | Meaning |
+|-------|---------|
+| `url` | Absolute URL through the Cloudflare Tunnel. Present only when the tunnel is running. |
+| `url_path` | Always present. Concatenate with `server.callback_url` for the same URL. |
+| `filename` | Friendly display name (Messages' `transfer_name`, fallback to internal `filename`). |
+| `mime_type` | Original IANA mime type as recorded in chat.db. |
+| `served_mime_type` | Present when IMsgCore transcodes for delivery (e.g., HEIC → JPEG). What `url` will actually serve. Omit means "same as `mime_type`". |
+| `uti` | Apple uniform type identifier. |
+| `size` | Bytes on disk. |
+| `is_sticker` | iMessage sticker flag. |
+| `missing` | True if chat.db references a file that's been pruned by macOS. The fetch URL will 404. |
+
+`GET /attachments/<id>/<index>` requires the same bearer token as the rest of the local API. The response is the file bytes with `Content-Type` set from `served_mime_type` / `mime_type` and a `Content-Disposition: inline; filename="..."` header so `curl -OJ` and browsers behave nicely. See [Local HTTP API](#local-http-api) below for the route entry.
+
 ---
 
 ## Local HTTP API
@@ -132,6 +178,7 @@ When **Enable Cloudflare Tunnel** is on, the public `*.trycloudflare.com` URL ro
 | `GET`  | `/chats/:id` | A chat by numeric `id` (includes participants) |
 | `GET`  | `/history?chat_id=N&limit=N` | Recent messages for a chat |
 | `GET`  | `/search/messages?query=foo&match=contains` | Full-text search |
+| `GET`  | `/attachments/:message_id/:index` | Fetch an attachment's bytes by message rowid + zero-based index |
 | `POST` | `/send` | Send a text message |
 | `POST` | `/mcp`  | MCP JSON-RPC endpoint (see "MCP server" below) |
 
