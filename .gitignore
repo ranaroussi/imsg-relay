@@ -1,6 +1,7 @@
 # Swift / SwiftPM
 src/.build/
 .build/
+build/sparkle-keys/ed_private_key
 *.swiftmodule
 *.swiftdoc
 .swiftpm/
