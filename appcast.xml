@@ -1,14 +1,19 @@
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>iMessage Relay</title>
         <link>https://raw.githubusercontent.com/ranaroussi/imsg-relay/main/appcast.xml</link>
         <description>Auto-update feed for iMessage Relay (macOS menu bar app).</description>
         <language>en</language>
-        <!-- Release entries are appended here automatically by the GitHub
-             Actions release workflow (.github/workflows/release.yml) via
-             scripts/appcast-add.sh. To publish a new release: tag v0.x.y
-             and push the tag; CI handles signing, notarization, EdDSA
-             signing of the ZIP, and updating this file. -->
+        <item>
+            <title>Version 0.1.0</title>
+            <pubDate>Tue, 09 Jun 2026 14:30:38 +0000</pubDate>
+            <link>https://github.com/ranaroussi/imsg-relay/releases/tag/v0.1.0</link>
+            <sparkle:releaseNotesLink>https://github.com/ranaroussi/imsg-relay/releases/tag/v0.1.0</sparkle:releaseNotesLink>
+            <sparkle:version>1</sparkle:version>
+            <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/ranaroussi/imsg-relay/releases/download/v0.1.0/imsg-relay-arm64.zip" length="47780869" type="application/octet-stream" sparkle:edSignature="Hiz2McDd7shKXMTDWHmruvOb782nTGblPaQUJfg54fD96V1OvIWHgHV8j4kgRxvd9jgLHbmvlS4m8GWV69p5Bg==" />
+        </item>
     </channel>
 </rss>
