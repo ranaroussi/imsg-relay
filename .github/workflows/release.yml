@@ -188,10 +188,28 @@ jobs:
     name: Update appcast.xml
     needs: release
     runs-on: macos-14
-    if: startsWith(github.ref, 'refs/tags/') && env.SPARKLE_ED_PRIVATE_KEY != ''
+    # The `env` context isn't available in job-level `if:` conditions
+    # (chicken-and-egg with the job's own `env:` block) and referencing
+    # `secrets.X != ''` in an `if:` is also unreliable, so we let the
+    # job always run on tag pushes and fail loudly in the first step
+    # below if the Sparkle key isn't configured. That's the right
+    # behavior: missing key on a tag push is a maintainer config error,
+    # not an optional flow.
+    if: startsWith(github.ref, 'refs/tags/')
     env:
       SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
     steps:
+      - name: Verify Sparkle private key is configured
+        run: |
+          if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then
+            echo "::error::SPARKLE_ED_PRIVATE_KEY secret is not set."
+            echo "::error::Generate a keypair with ./scripts/sparkle-keygen.sh and add both halves to:"
+            echo "::error::  Repository Settings → Secrets and variables → Actions → New repository secret"
+            echo "::error::See docs/DISTRIBUTION.md § 1.1 for the full one-time setup."
+            exit 1
+          fi
+          echo "Sparkle key length: ${#SPARKLE_ED_PRIVATE_KEY} chars — OK."
+
       - name: Checkout main
         uses: actions/checkout@v4
         with:
