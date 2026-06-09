@@ -175,7 +175,7 @@ struct SettingsView: View {
                 Text("2. Copy the connector token (`eyJh…`)")
                 Text("3. **Public Hostnames → Add a public hostname**")
                 Text("    • Subdomain + your domain")
-                Text("    • Service: HTTP, URL: `localhost:\(config.localAPIPort)`")
+                Text("    • Service: HTTP, URL: `localhost:\(String(config.localAPIPort))`")
                 Text("    *← this step creates the DNS record. Skipping it means the tunnel connects but no traffic reaches your Mac.*")
                     .foregroundStyle(.orange)
             }
