@@ -34,6 +34,7 @@ Configure in **Settings…** (menu bar → "Settings…" or `Cmd+,`):
 | Bearer token | `dev-token-1234` (any string) |
 | Enable Cloudflare Tunnel | On (for HTTP / MCP HTTP tests) |
 | Include reactions | On |
+| Backfill missed messages on restart | Off (default) |
 
 Click **Save** — you should see a green ✓ Saved flash for ~1.8s.
 
@@ -116,6 +117,44 @@ sleep 5
 
 curl -sS -H 'Authorization: Bearer dev-token-1234' http://127.0.0.1:7878/stats
 # Expected: {"queued":0,"dead":0}
+```
+
+**Verifying `backfillOnRestart` semantics:**
+
+Default (`Backfill missed messages on restart` = OFF):
+
+```bash
+# 1. Launch the app, send yourself a few iMessages, watch them relay.
+# 2. Quit the app.
+killall ImsgRelay
+
+# 3. Send yourself 2-3 more iMessages while the app is closed.
+# 4. Relaunch.
+open "/Applications/iMessage Relay.app"
+sleep 5
+
+# Queue should be 0/0. Messages sent while offline are NOT relayed.
+curl -sS -H 'Authorization: Bearer dev-token-1234' http://127.0.0.1:7878/stats
+
+# Log line confirms: "cursor primed at rowID NNNN (backfillOnRestart=false)"
+log show --predicate 'subsystem == "com.imsg-relay.app" && category == "imsg"' \
+  --info --last 30s | grep "cursor primed"
+```
+
+Toggled on (`Backfill missed messages on restart` = ON):
+
+```bash
+# 1. Settings → Inbound stream → enable "Backfill missed messages on restart". Save.
+# 2. Quit the app, send yourself a few iMessages, relaunch.
+killall ImsgRelay
+# (send messages here)
+open "/Applications/iMessage Relay.app"
+sleep 5
+
+# Queue should drain those missed messages — your webhook receives them.
+# Log line confirms: cursor is NOT re-primed (resumes from stored value).
+log show --predicate 'subsystem == "com.imsg-relay.app" && category == "imsg"' \
+  --info --last 30s | grep -E "cursor primed|watch loop starting"
 ```
 
 **Verifying graceful behavior without an endpoint:**

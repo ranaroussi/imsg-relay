@@ -34,6 +34,17 @@ struct AppConfig: Codable, Equatable, Sendable {
     /// event is parked as `dead` and surfaced in the menu bar.
     var maxRetryAttempts: Int
 
+    /// When `true`, the watcher resumes from the stored cursor on every
+    /// launch, so messages received while the app was offline get
+    /// relayed once it comes back up.
+    ///
+    /// When `false` (default), the cursor is re-primed to the current
+    /// `MAX(ROWID)` of `chat.db` at every launch, so only messages that
+    /// arrive **after** boot are relayed. This avoids the surprise of
+    /// suddenly replaying multi-day history to your endpoint after a
+    /// long quit period.
+    var backfillOnRestart: Bool
+
     static let `default` = AppConfig(
         serverIdentifier: "",
         serverEndpoint: "",
@@ -42,8 +53,51 @@ struct AppConfig: Codable, Equatable, Sendable {
         mcpPort: 7879,
         tunnelEnabled: false,
         includeReactions: true,
-        maxRetryAttempts: 12
+        maxRetryAttempts: 12,
+        backfillOnRestart: false
     )
+
+    // Custom decoder so we can extend `AppConfig` with new fields
+    // without invalidating already-persisted configs. Missing keys
+    // fall back to the `.default` value's field rather than throwing,
+    // which is what users want — adding a new toggle shouldn't reset
+    // their endpoint / token / etc.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = AppConfig.default
+        self.serverIdentifier  = (try? c.decode(String.self, forKey: .serverIdentifier))  ?? d.serverIdentifier
+        self.serverEndpoint    = (try? c.decode(String.self, forKey: .serverEndpoint))    ?? d.serverEndpoint
+        self.bearerToken       = (try? c.decode(String.self, forKey: .bearerToken))       ?? d.bearerToken
+        self.localAPIPort      = (try? c.decode(Int.self,    forKey: .localAPIPort))      ?? d.localAPIPort
+        self.mcpPort           = (try? c.decode(Int.self,    forKey: .mcpPort))           ?? d.mcpPort
+        self.tunnelEnabled     = (try? c.decode(Bool.self,   forKey: .tunnelEnabled))     ?? d.tunnelEnabled
+        self.includeReactions  = (try? c.decode(Bool.self,   forKey: .includeReactions))  ?? d.includeReactions
+        self.maxRetryAttempts  = (try? c.decode(Int.self,    forKey: .maxRetryAttempts))  ?? d.maxRetryAttempts
+        self.backfillOnRestart = (try? c.decode(Bool.self,   forKey: .backfillOnRestart)) ?? d.backfillOnRestart
+    }
+
+    // Memberwise init for `.default` and direct construction sites.
+    init(
+        serverIdentifier: String,
+        serverEndpoint: String,
+        bearerToken: String,
+        localAPIPort: Int,
+        mcpPort: Int,
+        tunnelEnabled: Bool,
+        includeReactions: Bool,
+        maxRetryAttempts: Int,
+        backfillOnRestart: Bool
+    ) {
+        self.serverIdentifier = serverIdentifier
+        self.serverEndpoint = serverEndpoint
+        self.bearerToken = bearerToken
+        self.localAPIPort = localAPIPort
+        self.mcpPort = mcpPort
+        self.tunnelEnabled = tunnelEnabled
+        self.includeReactions = includeReactions
+        self.maxRetryAttempts = maxRetryAttempts
+        self.backfillOnRestart = backfillOnRestart
+    }
 }
 
 /// Thread-safe accessor for `AppConfig`. Uses `UserDefaults` so settings

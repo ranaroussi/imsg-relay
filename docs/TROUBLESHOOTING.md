@@ -70,25 +70,33 @@ created on next launch.
 Alternatively, click the menu bar's "Clear N dead events" item to
 just clear the dead state — pending events remain queued.
 
-### Watcher backfilled my entire chat.db history on first launch
+### Watcher backfilled chat.db history I didn't expect
 
-This was a real bug in pre-v0.1.x builds. The fix:
-`ImsgClient.primeCursorIfNeeded()` now opens chat.db read-only at
-startup and stores `MAX(ROWID)` as the watch cursor before the stream
-starts. The relay is for *going-forward* events only.
+Check the **"Backfill missed messages on restart"** toggle in Settings
+→ Inbound stream. Default is **off** — only messages received after
+the app starts are relayed. If the toggle is on, messages that arrived
+while the app was offline get relayed at restart, which surprises
+people who quit overnight and come back to a flood.
 
-If you suspect the priming failed (e.g. chat.db wasn't readable at
-startup), check the log:
+To switch behaviors at runtime:
+
+1. Settings → Inbound stream → toggle "Backfill missed messages on restart" off
+2. Save
+3. Restart the app — `primeCursor()` will overwrite the stored cursor
+   with the current `MAX(ROWID)`, and only new messages will be relayed
+   from that point forward
+
+The decision log line confirms which mode was used:
 
 ```bash
 log show --predicate 'subsystem == "com.imsg-relay.app" && category == "imsg"' \
-  --info --last 5m | grep -i prime
+  --info --last 5m | grep "cursor primed"
+# Expected (default): cursor primed at rowID 12345 (backfillOnRestart=false)
 ```
 
-You should see `first launch — cursor primed at rowID <n>`.
-
-If the priming SQLite call fails, the watcher will backfill from the
-start. Recovery: wipe the queue, restart with FDA already granted.
+If priming logs the right message but you still see historical events,
+your stored queue contains residue — see "Queue stuck / unexpected
+event counts" above for the SQLite reset.
 
 ### Events keep going to "dead" without ever reaching my endpoint
 

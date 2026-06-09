@@ -48,6 +48,10 @@ struct SettingsView: View {
 
             Section("Inbound stream") {
                 Toggle("Include reactions (tapbacks)", isOn: $config.includeReactions)
+
+                Toggle("Backfill missed messages on restart",
+                       isOn: $config.backfillOnRestart)
+                    .help("When on, messages received while iMessage Relay was offline get relayed once it restarts. Off by default so a long quit period doesn't dump multi-day history to your endpoint at once.")
             }
         }
     }

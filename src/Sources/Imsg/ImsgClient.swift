@@ -45,12 +45,10 @@ actor ImsgClient {
     }
 
     private func watchLoop() async {
-        // On first launch (no cursor stored), prime it to the current
-        // MAX(ROWID) in chat.db so the watcher starts from "now"
-        // instead of replaying tens of thousands of historical
-        // messages. The relay is for going-forward events; historical
-        // messages remain queryable via the HTTP and MCP APIs.
-        primeCursorIfNeeded()
+        // Prime the watch cursor based on the user's "backfill on
+        // restart" preference (default off — relay only post-boot
+        // events). See `primeCursor()` for the exact policy.
+        primeCursor()
 
         var backoff: UInt64 = 1_000_000_000 // 1s
         while !Task.isCancelled {
@@ -77,23 +75,44 @@ actor ImsgClient {
         }
     }
 
-    /// Open chat.db read-only and store the current `MAX(ROWID)` as the
-    /// watch cursor. Cheap one-shot query that avoids streaming the
-    /// whole message history on first launch.
-    private func primeCursorIfNeeded() {
-        guard queue.cursor(Self.cursorKey) == nil else { return }
+    /// Set the watch cursor based on the user's `backfillOnRestart`
+    /// preference:
+    ///
+    /// * `backfillOnRestart == false` (default): always overwrite the
+    ///   cursor with the current `MAX(ROWID)` from `chat.db`. The
+    ///   watcher starts from "now" on every launch, so messages
+    ///   received while the app was offline are skipped. This is the
+    ///   right default — we don't want to dump multi-day history to
+    ///   the user's endpoint after a quit period.
+    ///
+    /// * `backfillOnRestart == true`: only prime the cursor when one
+    ///   isn't already stored. Subsequent launches resume from the
+    ///   last-delivered rowID, so missed messages get relayed when
+    ///   the app comes back up.
+    ///
+    /// The cursor itself is still updated on every delivered message
+    /// in `handle(message:)`, so toggling the setting at runtime takes
+    /// effect on the next restart without losing state.
+    private func primeCursor() {
+        let backfill = AppConfigStore.shared.current.backfillOnRestart
+        if backfill, queue.cursor(Self.cursorKey) != nil {
+            // Resume mode and we already have a checkpoint — leave it
+            // alone so historical events between quit and relaunch
+            // get streamed.
+            return
+        }
         let path = ("~/Library/Messages/chat.db" as NSString).expandingTildeInPath
         do {
             let db = try Connection(path, readonly: true)
             if let rowID = try db.scalar("SELECT MAX(ROWID) FROM message") as? Int64 {
                 queue.setCursor(Self.cursorKey, String(rowID))
-                Log.imsg.info("first launch — cursor primed at rowID \(rowID)")
+                Log.imsg.info("cursor primed at rowID \(rowID) (backfillOnRestart=\(backfill))")
             }
         } catch {
             // If the probe fails (FDA race, no Messages history, …)
-            // we fall back to `nil`, which means the watcher will
-            // backfill from the start. That's a worse path but is at
-            // least not a crash.
+            // we fall back to whatever cursor exists (or `nil`). The
+            // worst-case path is a full backfill on first launch —
+            // bad, but not a crash.
             Log.imsg.error("Failed to prime watch cursor: \(error.localizedDescription, privacy: .public)")
         }
     }

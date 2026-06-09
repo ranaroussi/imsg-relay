@@ -189,19 +189,26 @@ HTTPRelay.loop()
                           (parks immediately as 'dead')
 ```
 
-### First-launch cursor priming
+### Cursor priming policy
 
 The cursor is the watcher's "high-water mark" — only messages with
-`ROWID > cursor` get streamed. On first launch (no cursor row in the
-queue's `cursors` table) `ImsgClient.primeCursorIfNeeded()` opens
-`chat.db` read-only with SQLite.swift, runs `SELECT MAX(ROWID) FROM
-message`, and stores that as the cursor before the stream starts. The
-relay is for *new* events; historical messages stay queryable via
-`/history` and `/search/messages`.
+`ROWID > cursor` get streamed. The policy depends on the user-visible
+`AppConfig.backfillOnRestart` flag (Settings → Inbound stream →
+"Backfill missed messages on restart"; default off):
 
-If the priming query fails (FDA race, no Messages history), we fall
-back to `cursor = nil`, which triggers a backfill from the start —
-worse UX but at least not a crash.
+| `backfillOnRestart` | Behavior at every launch |
+|---------------------|--------------------------|
+| `false` (default)   | `ImsgClient.primeCursor()` always re-reads `MAX(ROWID)` from `chat.db` and overwrites the stored cursor. The watcher starts from "now"; anything received while the app was offline is **skipped**. |
+| `true`              | If a cursor is already stored, leave it alone — the watcher resumes from the last delivered `ROWID`, replaying messages received during the offline window. If no cursor exists (true first launch), prime to `MAX(ROWID)` the same way. |
+
+In either mode, the cursor is updated on every delivered message in
+`handle(message:)`, so toggling the flag at runtime takes effect on
+the next restart without losing state.
+
+`primeCursor()` opens `chat.db` read-only with `SQLite.swift` and runs
+`SELECT MAX(ROWID) FROM message`. If the query fails (FDA race, no
+Messages history, …) we fall back to whatever cursor exists — worst
+case is a full backfill on a true first launch, never a crash.
 
 ---
 

@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **"Backfill missed messages on restart" toggle** in Settings →
+  Inbound stream. Default off — only messages that arrive after the
+  app launches are relayed. When on, the watcher resumes from the last
+  delivered `ROWID` so messages received while the app was offline get
+  relayed at restart. Avoids dumping multi-day history to the user's
+  endpoint after a long quit period.
 - **MCP HTTP transport.** The menu bar app now exposes the full MCP tool
   surface over `POST /mcp` on the local Hummingbird server (and therefore
   through the Cloudflare Tunnel for remote agents). Built on the official
@@ -64,11 +70,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **First-launch chat.db backfill.** `ImsgClient.primeCursorIfNeeded()`
+- **First-launch chat.db backfill.** `ImsgClient.primeCursor()`
   now opens `~/Library/Messages/chat.db` read-only and stores
   `MAX(ROWID)` as the watch cursor before the watcher stream starts.
-  Previously, with no cursor, the watcher replayed every historical
-  message in chat.db (tens of thousands of events).
+  Default behavior re-primes on every launch unless the new
+  `backfillOnRestart` setting is on. Previously, with no cursor, the
+  watcher replayed every historical message in chat.db (tens of
+  thousands of events).
 - **Dead-event buildup during initial setup.** `HTTPRelay.loop()` now
   short-circuits when `serverEndpoint` is empty — it sleeps three
   seconds without ever calling `dueEvents()` or `markFailed()`. Events
