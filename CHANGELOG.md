@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.1.1] — 2026-06-09
 
 ### Changed
 
@@ -21,11 +21,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       MCP calls — one secret, two directions), Cloudflare Tunnel
       config, and a collapsed "Advanced" disclosure for the local
       API + MCP ports that rarely need touching.
-    - **General** — Contacts grant/reset, the Permissions overview
-      (Full Disk Access + Automation → Messages), and About
-      (version, build, bundle ID, copyright + repo link).
+    - **General** — Contacts grant/reset, Launch on login, the
+      Permissions overview (Full Disk Access + Automation → Messages),
+      and About (version, build, bundle ID).
+
+- **Settings window visual polish.** Custom three-tab layout
+  replaces the off-the-shelf `Form { Section }` style that no public
+  SwiftUI API lets us customize:
+    - Section titles are flush-left above each rounded card (no more
+      indent baked into the macOS grouped style).
+    - Cards are stroke-only (no fill) so they sit cleanly on the
+      window's grouped backdrop.
+    - Toggles are real macOS-style sliding switches (`.toggleStyle(.switch)`)
+      instead of the compact-context checkboxes SwiftUI was picking by
+      default.
+    - Copyright + GitHub link live in the window footer next to the
+      Save button — one persistent footer across all three tabs.
+    - Window title trimmed to "iMessage Relay" (was "iMessage Relay
+      Settings"). 12px symmetric padding from the window edges.
+
+### Added
+
+- **Launch on login.** New toggle in Settings → General registers
+  the app as a macOS login item via `SMAppService.mainApp`. The
+  toggle reverts to its actual system state on failure so the UI
+  never drifts.
+
+- **MIT LICENSE file** at the repo root. GitHub will now correctly
+  detect and surface the license in the repo sidebar.
+
+- **Attachment retrieval docs in README.** New "Fetching the bytes"
+  subsection under [Both directions on attachments][attachment-docs]
+  with copy-pasteable Node.js + Python examples, an explicit callout
+  that the `Bearer ` prefix on `Authorization` is mandatory, and
+  guidance on why the response `Content-Type` (transcoded JPEG) may
+  differ from `att.mime_type` (original HEIC from chat.db).
+
+[attachment-docs]: README.md#both-directions-on-attachments
 
 ### Fixed
+
+- **Contacts permission could not be granted on freshly notarized
+  builds.** The Contacts framework requires the
+  `com.apple.security.personal-information.addressbook` entitlement
+  to be present in the app's code signature. Without it,
+  `CNContactStore.requestAccess` returned `.denied` immediately and
+  the app never appeared in System Settings → Privacy & Security →
+  Contacts. Now embedded in `entitlements.plist` and signed in by
+  `create-app-bundle.sh`.
+
+- **TCC service name corrected to legacy `AddressBook`.** The
+  Contacts framework's underlying TCC entry is namespaced
+  `AddressBook` (the pre-2016 name), not `Contacts`. Our
+  `tccutil reset` invocation in the "Reset & Re-request" button
+  now uses the correct service name, so the reset actually clears
+  the cached deny and re-presents the system prompt.
 
 - **Contacts permission: self-service recovery from the
   "denied-but-invisible-in-System-Settings" stalemate.** Two changes:
@@ -46,6 +96,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
        system (e.g. a dev binary in the project folder alongside the
        notarized DMG in /Applications) and confuse TCC's signature
        matcher.
+
+## [0.1.0] — 2026-06-08
+
+### Fixed
 
 - **`callback_url` and absolute attachment URLs now populated
   immediately at boot in named-tunnel mode.** Previously

@@ -399,7 +399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsWindow == nil {
             let host = NSHostingController(rootView: SettingsView())
             let win = NSWindow(contentViewController: host)
-            win.title = "iMessage Relay Settings"
+            win.title = "iMessage Relay"
             win.styleMask = [.titled, .closable, .miniaturizable]
             win.isReleasedWhenClosed = false
             settingsWindow = win

@@ -57,8 +57,8 @@ Shipped as a native macOS menu bar app, code-signed and notarized, with Sparkle 
 Install the app (see [Install](#install) below), grant Full Disk Access, and verify the relay end-to-end with one curl through the auto-provisioned free tunnel:
 
 ```bash
-# 1. Set Endpoint URL in Settings → General to https://webhook.site/<your-uuid> (or any HTTPS endpoint).
-# 2. Toggle Settings → Network → Cloudflare Tunnel ON (Free mode).
+# 1. Set Webhook URL in Settings → Outbound to https://webhook.site/<your-uuid> (or any HTTPS endpoint).
+# 2. Toggle Settings → Inbound → Cloudflare Tunnel ON (Free mode).
 # 3. Read the public URL from the menu bar and curl it:
 
 export TUNNEL_URL="https://<your-random-subdomain>.trycloudflare.com"
@@ -125,10 +125,10 @@ The full arc — start the tunnel, point it at a webhook receiver, send yourself
 
 ```bash
 # 1. Open Settings… and set:
-#      Identifier: personal
-#      Endpoint URL: https://webhook.site/<your-uuid>
-#      Bearer token: <any string>
-#      Enable Cloudflare Tunnel: ON (Free mode for the demo)
+#      [Outbound]  Identifier: personal
+#      [Outbound]  Webhook URL: https://webhook.site/<your-uuid>
+#      [Inbound]   Bearer token: <any string>
+#      [Inbound]   Enable Cloudflare Tunnel: ON (Free mode for the demo)
 
 # 2. Read the public tunnel URL from the menu bar and copy it:
 export TUNNEL_URL="https://manufacture-array-foo-bar.trycloudflare.com"
@@ -232,7 +232,7 @@ The relay never holds inbound state in memory — every event lands in a SQLite 
 - Each delivery attempt waits `min(60, 2^n) + jitter` seconds.
 - After configurable `Max retry attempts` (default `12`) the event is parked as `dead` and never retried again — visible in the menu bar's queue stats with a one-click "Clear dead events" action.
 - On boot, the queue resumes from wherever it left off.
-- A `chat.db` watch cursor is persisted on every successful flush, so message backfill on restart is opt-in (off by default — see Settings → General → *Backfill missed messages on restart*).
+- A `chat.db` watch cursor is persisted on every successful flush, so message backfill on restart is opt-in (off by default — see Settings → Outbound → *Backfill missed messages on restart*).
 
 The queue is exposed as `GET /stats` (`{"pending": N, "dead": M}`) for monitoring, and the watcher is paused/resumed by the same `TunnelStatus` observable that drives the menu bar's UI.
 
@@ -262,6 +262,54 @@ The queue is exposed as `GET /stats` (`{"pending": N, "dead": M}`) for monitorin
 ```
 
 `url` is the absolute URL through the tunnel (present only when the tunnel is up), `url_path` is always present so you can concatenate with `server.callback_url` if you'd rather. `served_mime_type` reflects on-the-fly HEIC→JPEG transcoding so the bytes you actually fetch are usable by anything that can decode JPEG. `missing: true` means `chat.db` references a file that's been pruned by macOS — the fetch URL will 404.
+
+#### Fetching the bytes
+
+Your webhook receiver makes an authenticated `GET` to `attachments[].url` using the **same bearer token** that authenticated the inbound webhook POST. One token, both directions.
+
+```bash
+curl -L \
+  -H "Authorization: Bearer $TOKEN" \
+  "https://imsg.yourcompany.com/attachments/19592/0" \
+  -o photo.jpg
+```
+
+> **The `Bearer ` prefix is mandatory.** The auth middleware does a literal `header == "Bearer \(token)"` comparison ([`LocalAPIServer.swift:380`](src/Sources/API/LocalAPIServer.swift)). `Authorization: 123` returns `401`; `Authorization: Bearer 123` returns the bytes.
+
+Programmatic equivalents:
+
+```javascript
+// Node.js — fetch every non-missing attachment from a webhook payload
+for (const att of event.data.attachments ?? []) {
+  if (att.missing) continue;
+  const resp = await fetch(att.url, {
+    headers: { Authorization: `Bearer ${process.env.IMSG_TOKEN}` },
+  });
+  const buf = Buffer.from(await resp.arrayBuffer());
+  // resp.headers.get('content-type') reflects the *served* mime
+  // (image/jpeg for HEIC sources), not the original att.mime_type.
+  fs.writeFileSync(`./incoming/${att.filename}`, buf);
+}
+```
+
+```python
+# Python — same flow
+import requests, os
+for att in event["data"].get("attachments", []):
+    if att["missing"]:
+        continue
+    r = requests.get(att["url"],
+                     headers={"Authorization": f"Bearer {os.environ['IMSG_TOKEN']}"})
+    r.raise_for_status()
+    with open(f"./incoming/{att['filename']}", "wb") as f:
+        f.write(r.content)
+```
+
+A few things integrators routinely get wrong here:
+
+- **Trust the response `Content-Type`, not `att.mime_type`.** The event payload carries `chat.db`'s original mime (`image/heic`), but the bytes you receive are the transcoded JPEG. If `served_mime_type` is present on the attachment, it'll match the response header.
+- **The `filename` in the event keeps its original extension** (e.g. `IMG_1234.HEIC`) even when the bytes come back as JPEG. Rename to `.jpg` on disk if it matters for your downstream tools, or trust the `Content-Type` and ignore the extension entirely.
+- **`url` is absent when the tunnel is off.** Always fall back to `server.callback_url + url_path` (or your own localhost concatenation if you run on the same Mac).
 
 **Outbound (REST).** `POST /send/attachment?to=&filename=&text=` takes the raw bytes in the body — no multipart, no base64, just bytes. 100 MB cap.
 
@@ -473,19 +521,22 @@ Click the menu bar icon → **Settings…** and fill in:
 
 | Tab | Field | Default | Purpose |
 |-----|-------|---------|---------|
-| General | **Identifier** | `relay` | Stable string sent as `server.identifier` on every event. Example: `sales`, `support`, `personal`. |
-| General | **Endpoint URL** | (empty) | HTTPS endpoint that receives relayed events. Events queue up while empty — they drain the moment you save a URL. |
-| General | **Bearer token** | (empty) | Sent as `Authorization: Bearer <token>` on outbound POSTs *and* required on the local HTTP API when set. Leave blank for dev. |
-| General | **Include reactions (tapbacks)** | on | When off, reactions are dropped at the watcher and never enter the queue. |
-| General | **Backfill missed messages on restart** | off | When on, messages received while iMessage Relay was offline get relayed once it restarts. Off by default so a long quit period doesn't dump multi-day history at once. |
-| General | **Contacts access** | not requested | Click *Grant Access* to enable `sender_name` enrichment. See [Permissions](#permissions). |
-| Network | **Local API port** | `7878` | Where the Hummingbird server listens. Must match the tunnel's Public Hostname target. |
-| Network | **MCP port** | `7879` | Reserved for a future dedicated MCP transport; currently unused (MCP is served on the same port as REST). |
-| Network | **Enable Cloudflare Tunnel** | off | Spawns `cloudflared` and reveals the live public URL inline with a copy button. |
-| Network | **Tunnel mode** | Free | `Free (trycloudflare.com)` (ephemeral URL) or `Named (your own domain)` (stable hostname). See [Tunnel modes](#cloudflare-tunnel-two-modes). |
-| Network | **Tunnel token** | (empty) | (Named mode only) Cloudflare connector token from the Zero Trust dashboard. Stored as a secret. |
-| Network | **Public hostname** | (empty) | (Named mode only) The DNS name your tunnel routes from, e.g. `imsg.yourcompany.com` — bare host, no scheme. |
-| Network | **Max retry attempts** | `12` | Each attempt waits `min(60, 2^n) + jitter` seconds. After this many failures an event is parked as `dead`. |
+| Outbound | **Identifier** | `relay` | Stable string sent as `server.identifier` on every event. Example: `sales`, `support`, `personal`. |
+| Outbound | **Webhook URL** | (empty) | HTTPS endpoint that receives relayed events. Events queue up while empty — they drain the moment you save a URL. |
+| Outbound | **Include reactions (tapbacks)** | on | When off, reactions are dropped at the watcher and never enter the queue. |
+| Outbound | **Backfill missed messages on restart** | off | When on, messages received while iMessage Relay was offline get relayed once it restarts. Off by default so a long quit period doesn't dump multi-day history at once. |
+| Outbound | **Max retry attempts** | `12` | Each attempt waits `min(60, 2^n) + jitter` seconds. After this many failures an event is parked as `dead`. |
+| Inbound | **Bearer token** | (empty) | Sent as `Authorization: Bearer <token>` on outbound webhook POSTs *and* required on incoming local API / MCP / attachment calls. One secret, both directions. Leave blank for dev. |
+| Inbound | **Enable Cloudflare Tunnel** | off | Spawns `cloudflared` and reveals the live public URL inline with a copy button (Free mode only — in Named mode the hostname is what you typed). |
+| Inbound | **Tunnel mode** | Free | `Free` (ephemeral `*.trycloudflare.com` URL) or `Named (custom)` (stable hostname you bring). See [Tunnel modes](#cloudflare-tunnel-two-modes). |
+| Inbound | **Tunnel token** | (empty) | (Named mode only) Cloudflare connector token from the Zero Trust dashboard. Stored as a secret. |
+| Inbound | **Public hostname** | (empty) | (Named mode only) The DNS name your tunnel routes from, e.g. `imsg.yourcompany.com` — bare host, no scheme. |
+| Inbound → Advanced | **Local API port** | `7878` | Where the Hummingbird server listens. Must match the tunnel's Public Hostname target. Collapsed by default — rarely needs changing. |
+| Inbound → Advanced | **MCP port** | `7879` | Reserved for a future dedicated MCP transport; currently unused (MCP is served on the same port as REST). |
+| General | **Contacts access** | not requested | Click *Grant Access* to enable `sender_name` enrichment. *Reset & Re-request* recovers from the rare "denied + missing from Privacy pane" state. See [Permissions](#permissions). |
+| General | **Launch on login** | off | Registers iMessage Relay as a macOS login item via `SMAppService`. Toggle reverts on failure so the UI never drifts from system state. |
+| General | **Permissions overview** | — | At-a-glance status of Full Disk Access + Automation → Messages with quick-jump buttons into System Settings. |
+| General | **About** | — | Version, build number, bundle identifier. |
 
 Click **Save**, you'll see a green ✓ Saved confirmation. Most fields hot-reload; tunnel-relevant changes trigger a smart restart (only stops + starts the tunnel if something tunnel-related actually changed).
 
@@ -526,7 +577,7 @@ You're now on the **Route traffic** page (also reachable later via Tunnels → y
    - **Domain:** pick your CF-managed domain from the dropdown
    - **Path:** *leave empty*
    - **Service type:** `HTTP`
-   - **URL:** `localhost:7878` (must match Settings → Network → **Local API port**)
+   - **URL:** `localhost:7878` (must match Settings → Inbound → Advanced → **Local API port**)
 3. **Save hostname**
 
 When you save, two things happen on Cloudflare's side: the tunnel's ingress gains a routing rule, and a proxied CNAME is created in your zone pointing `imsg.yourcompany.com → <tunnel-uuid>.cfargotunnel.com`. Verify with `dig +short imsg.yourcompany.com`.
@@ -537,17 +588,17 @@ When you save, two things happen on Cloudflare's side: the tunnel's ingress gain
 
 **Step 4 — Paste credentials**
 
-In iMessage Relay → Settings → Network → Cloudflare Tunnel:
+In iMessage Relay → Settings → Inbound → Cloudflare Tunnel:
 
 1. ✅ Enable tunnel
-2. **Mode:** Named (your own domain)
+2. **Mode:** Named (custom)
 3. **Tunnel token:** paste the `eyJh…` string from step 2
 4. **Public hostname:** the full hostname from step 3, e.g. `imsg.yourcompany.com` (bare host, no `https://`)
 5. **Save**
 
 **Step 5 — Verify**
 
-The tunnel stops + restarts automatically when you save. Within ~5 seconds the **Public URL** row in Settings → Network should show `https://imsg.yourcompany.com`.
+The tunnel stops + restarts automatically when you save. Within ~5 seconds `cloudflared`'s connector should register with Cloudflare's edge. There's no Public URL row in named mode (the hostname is identical to what you typed in step 4), so verify directly:
 
 ```bash
 # DNS resolves (created in step 3)
@@ -575,7 +626,7 @@ iMessage Relay needs up to three system grants. All three prompts come from macO
 |------------|----------|-----|----------------------|
 | **Full Disk Access** | yes | Read `~/Library/Messages/chat.db` | First launch — friendly retry-able prompt, auto-resumes once granted |
 | **Automation → Messages** | yes (for sends) | Drive Messages.app to send | On your first outbound send |
-| **Contacts** | optional | Resolve handles to names on events + history | Settings → General → Contacts → *Grant Access* (does not auto-prompt; see [Contact name resolution](#contact-name-resolution) for why) |
+| **Contacts** | optional | Resolve handles to names on events + history | Settings → General → Contacts → *Grant Access* (does not auto-prompt; see [Contact name resolution](#contact-name-resolution) for why). Use *Reset & Re-request* if the macOS Privacy pane never showed the app. |
 
 The app sits idle, no events queued, until Full Disk Access is granted. Once granted it picks up where it left off.
 
