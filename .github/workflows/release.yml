@@ -12,7 +12,11 @@ permissions:
 jobs:
   build:
     name: Build (${{ matrix.arch }})
-    runs-on: macos-14
+    # macos-15 ships Xcode 16.4 (Swift 6.1) by default — needed for
+    # SQLite.swift >= 0.15.5 which uses swift-tools-version: 6.1.0.
+    # macos-14 only has up to Xcode 16.2 (Swift 6.0) and is being
+    # deprecated in late 2026 anyway, so we may as well jump now.
+    runs-on: macos-15
     strategy:
       matrix:
         include:
@@ -174,7 +178,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: build
-    runs-on: macos-14
+    runs-on: macos-15
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Checkout
@@ -229,7 +233,7 @@ jobs:
   appcast:
     name: Update appcast.xml
     needs: release
-    runs-on: macos-14
+    runs-on: macos-15
     # The `env` context isn't available in job-level `if:` conditions
     # (chicken-and-egg with the job's own `env:` block) and referencing
     # `secrets.X != ''` in an `if:` is also unreliable, so we let the
