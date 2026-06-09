@@ -23,19 +23,25 @@ actor ImsgClient {
     /// the main thread on lifecycle changes). Used at event-encode
     /// time to attach absolute attachment URLs.
     nonisolated(unsafe) private weak var tunnel: TunnelManager?
+    /// `ContactsResolver` is `@unchecked Sendable` and stateless from
+    /// the actor's perspective (its in-memory cache is locked
+    /// internally), so a plain `let` is enough — the compiler can
+    /// prove cross-isolation safety from the type alone.
+    private let contacts: ContactsResolver?
 
     private var watchTask: Task<Void, Never>?
     private var includeReactions: Bool
 
     static let cursorKey = "imsg.watch.since_rowid"
 
-    init(queue: RelayQueue, relay: HTTPRelay, tunnel: TunnelManager? = nil) throws {
+    init(queue: RelayQueue, relay: HTTPRelay, tunnel: TunnelManager? = nil, contacts: ContactsResolver? = nil) throws {
         self.store = try MessageStore()
         self.watcher = MessageWatcher(store: self.store)
         self.sender = MessageSender()
         self.queue = queue
         self.relay = relay
         self.tunnel = tunnel
+        self.contacts = contacts
         self.includeReactions = AppConfigStore.shared.current.includeReactions
     }
 
@@ -137,10 +143,10 @@ actor ImsgClient {
         }
 
         // Compose the JSON payload. Start with the static message
-        // encoder, then enrich with attachment metadata (when present)
-        // so remote endpoints can pull the bytes via the new
-        // `GET /attachments/:msg_id/:index` route.
-        var payload = Self.encode(message)
+        // encoder (enriched with contact names when the resolver has
+        // access), then attach attachment metadata so remote endpoints
+        // can pull the bytes via `GET /attachments/:msg_id/:index`.
+        var payload = Self.encode(message, resolveName: nameResolver)
         if message.attachmentsCount > 0 {
             payload["attachments"] = encodeAttachments(for: message)
         }
@@ -240,12 +246,24 @@ actor ImsgClient {
 
     func historyJSON(chatID: Int64, limit: Int) throws -> Data {
         let messages = try store.messages(chatID: chatID, limit: limit)
-        return try Self.encodeArray(messages.map(Self.encode))
+        let resolver = nameResolver
+        return try Self.encodeArray(messages.map { Self.encode($0, resolveName: resolver) })
     }
 
     func searchJSON(query: String, match: String = "contains", limit: Int = 50) throws -> Data {
         let messages = try store.searchMessages(query: query, match: match, limit: limit)
-        return try Self.encodeArray(messages.map(Self.encode))
+        let resolver = nameResolver
+        return try Self.encodeArray(messages.map { Self.encode($0, resolveName: resolver) })
+    }
+
+    /// Snapshot of the contacts resolver as a plain closure. Used by
+    /// both the relay's event-encoder (line ~150) and the bulk REST
+    /// encoders above so they all surface `sender_name` consistently.
+    /// Returning `nil` here means "no enrichment" (no resolver wired
+    /// in, or the user hasn't granted Contacts access yet).
+    private var nameResolver: ((String) -> String?)? {
+        guard let contacts else { return nil }
+        return { handle in contacts.name(for: handle) }
     }
 
     func send(
@@ -306,7 +324,7 @@ actor ImsgClient {
         try JSONSerialization.data(withJSONObject: row, options: [.fragmentsAllowed])
     }
 
-    static func encode(_ message: Message) -> [String: Any] {
+    static func encode(_ message: Message, resolveName: ((String) -> String?)? = nil) -> [String: Any] {
         var out: [String: Any] = [
             "id": message.rowID,
             "chat_id": message.chatID,
@@ -318,9 +336,17 @@ actor ImsgClient {
             "service": message.service,
             "attachments_count": message.attachmentsCount
         ]
+        if let resolveName, let name = resolveName(message.sender), !name.isEmpty {
+            out["sender_name"] = name
+        }
         if let replyToGUID = message.replyToGUID { out["reply_to_guid"] = replyToGUID }
         if let replyToText = message.replyToText { out["reply_to_text"] = replyToText }
-        if let replyToSender = message.replyToSender { out["reply_to_sender"] = replyToSender }
+        if let replyToSender = message.replyToSender {
+            out["reply_to_sender"] = replyToSender
+            if let resolveName, let name = resolveName(replyToSender), !name.isEmpty {
+                out["reply_to_sender_name"] = name
+            }
+        }
         if let destination = message.destinationCallerID { out["destination_caller_id"] = destination }
 
         if message.isReaction {

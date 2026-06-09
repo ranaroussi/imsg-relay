@@ -11,6 +11,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Contacts framework integration.** When the user grants the new
+  Contacts permission, inbound events (`message.received`,
+  `message.sent`, `message.reaction`) carry a `data.sender_name`
+  (and `data.reply_to_sender_name` for replies) resolved from the
+  local Contacts database. The same enrichment shows up on
+  `GET /history` and `GET /search/messages` responses, so the
+  `imsg_get_history` / `imsg_search_messages` MCP tools surface
+  contact names too without any extra plumbing.
+
+  A new `ContactsResolver` (in `Sources/Contacts/`) wraps
+  `CNContactStore.unifiedContacts(matching:)` with a thread-safe
+  in-memory cache. Lookups normalize phone numbers via the system's
+  `CNPhoneNumber` predicate (handles E.164 vs national formatting
+  transparently). The cache is auto-invalidated on
+  `CNContactStoreDidChange`, so adding a name for a previously-
+  unknown handle picks up on the next event.
+
+  Because the relay is `LSUIElement = true`, TCC will not show its
+  permission dialog without foreground activation. So instead of
+  auto-prompting at boot (which would silently deny and cache that
+  deny forever), there's a new **Contacts** section in the General
+  Settings tab with a "Grant Access" button that activates the app
+  via `NSApp.activate(ignoringOtherApps: true)` before calling
+  `requestAccess()`. After a deny it links straight to System
+  Settings → Privacy & Security → Contacts. `NSContactsUsageDescription`
+  has been in Info.plist all along; it's now actually used.
+
 - **MCP testing recipes.** `TESTING.md` now has:
   - A copy-pasteable "exercise every read-only tool" block that calls
     `imsg_get_status`, `imsg_list_chats`, `imsg_get_chat`,

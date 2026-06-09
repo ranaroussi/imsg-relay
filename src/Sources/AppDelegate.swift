@@ -2,6 +2,7 @@ import Cocoa
 import SwiftUI
 import Sparkle
 import MCP
+import Contacts
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -17,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mcp: MCPService?
     private var mcpTransport: StatelessHTTPServerTransport?
     private var mcpTask: Task<Void, Error>?
+    private var contacts: ContactsResolver?
 
     private var updater: SPUStandardUpdaterController?
 
@@ -113,8 +115,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let queue = try RelayQueue()
             let tunnel = TunnelManager()
             let relay = HTTPRelay(queue: queue, tunnel: tunnel)
-            let imsg  = try ImsgClient(queue: queue, relay: relay, tunnel: tunnel)
+            // Contacts resolver is best-effort: created unconditionally
+            // so callers can rely on it being non-nil, but
+            // `name(for:)` returns nil until the user grants access.
+            // Stored on AppDelegate so the optional UI prompt + the
+            // `CNContactStoreDidChange` invalidation can reach it.
+            let contacts = ContactsResolver()
+            self.contacts = contacts
+            let imsg  = try ImsgClient(queue: queue, relay: relay, tunnel: tunnel, contacts: contacts)
             tunnel.attach(relay: relay)
+
+            // We DON'T auto-request Contacts access on boot. This is
+            // an `LSUIElement` (menu bar) app — without a regular
+            // foreground activation policy, TCC refuses to show the
+            // permission dialog and immediately denies the request,
+            // permanently caching the deny. Instead, the Settings UI
+            // exposes a "Grant Contacts Access" button that calls
+            // `NSApp.activate(ignoringOtherApps: true)` before
+            // requesting — which makes TCC show the prompt as
+            // expected. See `requestContactsAccess()`.
+
+            // Invalidate the resolver's cache when the user edits a
+            // contact (e.g. adds a name for a previously-unknown
+            // handle) so the next event picks up the change without
+            // restarting the app.
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(contactStoreChanged),
+                name: .CNContactStoreDidChange,
+                object: nil
+            )
 
             // HTTP MCP: a `StatelessHTTPServerTransport` from the SDK
             // gets bound to the SDK's `Server`, and the same transport
@@ -389,6 +419,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func restartTunnel() {
         tunnel?.stop()
         if AppConfigStore.shared.current.tunnelEnabled { startTunnel() }
+    }
+
+    /// Forwarded from `CNContactStoreDidChange`. The OS fires this
+    /// the moment the user edits anything in Contacts — including
+    /// adding a name for a previously-unknown handle. Wipe the
+    /// resolver's in-memory cache so the next event picks up the
+    /// change.
+    @objc private func contactStoreChanged() {
+        contacts?.invalidate()
+        Log.contacts.debug("CNContactStore changed; resolver cache invalidated")
+    }
+
+    /// Called from the Settings UI. Foregrounds the app first because
+    /// TCC will not present its permission dialog to an `LSUIElement`
+    /// process — the request silently fails with "Access Denied" and
+    /// the deny is then cached forever. Activating first guarantees
+    /// the system shows the prompt to the user.
+    func requestContactsAccess() async -> Bool {
+        guard let contacts else { return false }
+        NSApp.activate(ignoringOtherApps: true)
+        let ok = await contacts.requestAccess()
+        Log.contacts.info("user-initiated Contacts request: granted=\(ok, privacy: .public)")
+        return ok
+    }
+
+    /// Snapshot of the current Contacts authorization state for the
+    /// Settings UI. Static-by-type because `CNContactStore` reports
+    /// the system value, not per-instance.
+    nonisolated func contactsAuthorizationStatus() -> CNAuthorizationStatus {
+        ContactsResolver.authorizationStatus()
     }
 
     @objc private func clearDeadEvents() {

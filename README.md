@@ -1,6 +1,12 @@
+![iMessage Relay](./assets/readme-banner.jpg)
+
 # iMessage Relay
 
 > Turn any Mac into a programmable iMessage gateway.
+
+![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
+![Cloudflare](https://img.shields.io/badge/Cloudflare-Tunnels-F38020?logo=cloudflare&logoColor=white)
+![MCP](https://img.shields.io/badge/MCP-ready-111?logo=anthropic&logoColor=white)
 
 iMessage Relay is a native macOS menu bar app that lets a remote service read and send iMessages on your Mac, in real time, without requiring direct access to Apple's infrastructure. The Mac stays the "dumb edge node" — your business logic, AI workflows, CRM, and storage all live on your server.
 
@@ -10,7 +16,7 @@ It exposes three surfaces for remote integration:
 - **Local HTTP API** — REST endpoints for listing chats, fetching history, searching, and sending messages (with optional Cloudflare Tunnel exposure).
 - **MCP server** — stdio Model Context Protocol server with seven tools, ready to plug into Claude Desktop or any MCP client.
 
-Built on [`openclaw/imsg`](https://github.com/openclaw/imsg) (specifically its `IMsgCore` SwiftPM library), pure SwiftPM, no Xcode required.
+> Built on the `IMsgCore` SwiftPM library from [`openclaw/imsg`](https://github.com/openclaw/imsg). Pure SwiftPM, no Xcode required.
 
 ---
 
@@ -239,6 +245,31 @@ Event types (`EventType` enum in `src/Sources/Relay/EventEnvelope.swift`):
 - `relay.started` / `relay.stopped` — relay lifecycle
 
 Your endpoint should respond `2xx` to confirm delivery. `5xx` and `429` trigger a backoff-and-retry; other `4xx` codes park the event as `dead`.
+
+### Contact names
+
+When you grant **Contacts** access (Settings → General → Contacts → *Grant Access*), inbound message and reaction events carry an additional `data.sender_name` (and `data.reply_to_sender_name` for replies) resolved from your Mac's Contacts:
+
+```json
+{
+  "type": "message.received",
+  "data": {
+    "id": 19592,
+    "sender": "+14155550123",
+    "sender_name": "Jane Doe",
+    "text": "Hello",
+    "reply_to_sender": "ran@aroussi.com",
+    "reply_to_sender_name": "Ran Aroussi",
+    ...
+  }
+}
+```
+
+Without the grant the events look identical except `sender_name` / `reply_to_sender_name` are absent — callers should treat them as best-effort enrichment, not a contract. The resolver caches lookups in-memory; editing a contact card (e.g. adding a name for a previously-unknown handle) invalidates the cache automatically via `CNContactStoreDidChange`.
+
+The same `sender_name` enrichment shows up on `GET /history` and `GET /search/messages` responses, so MCP clients calling `imsg_get_history` and `imsg_search_messages` see contact names too without any extra plumbing.
+
+> **Why the prompt is gated behind a button instead of auto-prompting on launch:** the relay is an `LSUIElement` (menu bar) app, and TCC refuses to display permission dialogs to apps without foreground activation. Auto-requesting on boot would silently deny and cache that deny forever. The Settings button activates the app first so the prompt shows up correctly.
 
 ### Attachments
 
@@ -521,7 +552,7 @@ All three prompts come from macOS itself. The app sits idle until they are grant
 ## Roadmap
 
 - [ ] Generate + ship Sparkle ED25519 keypair, automate `appcast.xml` publication from the release workflow
-- [ ] Contacts framework integration: resolve handles to names on outbound events
+
 - [ ] Settings → Status tab: live permission detection + buttons that jump to each pane
 - [ ] Tests target (skipped for the v0 slice to ship faster)
 - [ ] Stream attachment uploads instead of buffering them in memory (current cap: 100 MB)

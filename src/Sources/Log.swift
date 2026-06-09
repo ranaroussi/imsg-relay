@@ -11,4 +11,5 @@ enum Log {
     static let mcp     = Logger(subsystem: subsystem, category: "mcp")
     static let tunnel  = Logger(subsystem: subsystem, category: "tunnel")
     static let settings = Logger(subsystem: subsystem, category: "settings")
+    static let contacts = Logger(subsystem: subsystem, category: "contacts")
 }

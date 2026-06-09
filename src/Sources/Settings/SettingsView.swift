@@ -1,11 +1,14 @@
 import SwiftUI
 import AppKit
+import Contacts
 
 struct SettingsView: View {
     @State private var config: AppConfig = AppConfigStore.shared.current
     @ObservedObject private var tunnel = TunnelStatus.shared
     @State private var copied = false
     @State private var justSaved = false
+    @State private var contactsStatus: CNAuthorizationStatus = ContactsResolver.authorizationStatus()
+    @State private var contactsRequestInFlight = false
 
     var body: some View {
         TabView {
@@ -52,6 +55,79 @@ struct SettingsView: View {
                 Toggle("Backfill missed messages on restart",
                        isOn: $config.backfillOnRestart)
                     .help("When on, messages received while iMessage Relay was offline get relayed once it restarts. Off by default so a long quit period doesn't dump multi-day history to your endpoint at once.")
+            }
+
+            Section("Contacts") {
+                contactsRow
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var contactsRow: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(contactsStatusLabel).font(.callout)
+                Text(contactsStatusHelp).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            switch contactsStatus {
+            case .notDetermined:
+                Button(action: requestContactsAccess) {
+                    if contactsRequestInFlight {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("Grant Access")
+                    }
+                }
+                .disabled(contactsRequestInFlight)
+            case .denied, .restricted:
+                Button("Open Privacy Settings") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            case .authorized, .limited:
+                Text("Granted").foregroundStyle(.green).font(.callout)
+            @unknown default:
+                EmptyView()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            contactsStatus = ContactsResolver.authorizationStatus()
+        }
+    }
+
+    private var contactsStatusLabel: String {
+        switch contactsStatus {
+        case .notDetermined: return "Resolve phone/email handles to contact names"
+        case .denied, .restricted: return "Contacts access denied"
+        case .authorized, .limited: return "Contacts access granted"
+        @unknown default: return "Contacts access (unknown state)"
+        }
+    }
+
+    private var contactsStatusHelp: String {
+        switch contactsStatus {
+        case .notDetermined:
+            return "When granted, inbound events carry a sender_name field (and reply_to_sender_name) resolved from your Contacts."
+        case .denied, .restricted:
+            return "Inbound events will continue to carry the raw handle (phone number or email) in sender. Open System Settings to enable Contacts for iMessage Relay."
+        case .authorized, .limited:
+            return "Inbound events now carry sender_name resolved from Contacts. Editing a card invalidates the in-memory cache automatically."
+        @unknown default:
+            return ""
+        }
+    }
+
+    private func requestContactsAccess() {
+        guard let delegate = NSApp.delegate as? AppDelegate else { return }
+        contactsRequestInFlight = true
+        Task {
+            _ = await delegate.requestContactsAccess()
+            await MainActor.run {
+                contactsStatus = ContactsResolver.authorizationStatus()
+                contactsRequestInFlight = false
             }
         }
     }
