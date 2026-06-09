@@ -18,10 +18,10 @@ jobs:
         include:
           - arch: arm64
             swift_arch: arm64
-            cloudflared_asset: cloudflared-darwin-arm64
+            cloudflared_asset: cloudflared-darwin-arm64.tgz
           - arch: x86_64
             swift_arch: x86_64
-            cloudflared_asset: cloudflared-darwin-amd64
+            cloudflared_asset: cloudflared-darwin-amd64.tgz
 
     steps:
       - name: Checkout
@@ -57,12 +57,30 @@ jobs:
 
       - name: Download cloudflared
         run: |
+          # Cloudflare ships macOS cloudflared as a .tgz archive
+          # containing a single `cloudflared` binary at the root.
+          # The bare-binary asset they used to publish at
+          # `cloudflared-darwin-{arm64,amd64}` no longer exists —
+          # downloading it 404s.
           mkdir -p src/Sources/Resources
+          tmp="$(mktemp -d)"
           curl -fSL --retry 3 --retry-delay 5 \
             "https://github.com/cloudflare/cloudflared/releases/latest/download/${{ matrix.cloudflared_asset }}" \
-            -o src/Sources/Resources/cloudflared
+            -o "$tmp/cloudflared.tgz"
+          tar -xzf "$tmp/cloudflared.tgz" -C "$tmp"
+          # Locate the extracted binary (top-level filename varies between
+          # `cloudflared` and `cloudflared-darwin-<arch>` across releases).
+          extracted="$(find "$tmp" -maxdepth 2 -type f -name 'cloudflared*' ! -name '*.tgz' | head -n1)"
+          if [ -z "$extracted" ]; then
+            echo "::error::Couldn't find cloudflared binary inside $tmp after extraction"
+            ls -la "$tmp"
+            exit 1
+          fi
+          cp "$extracted" src/Sources/Resources/cloudflared
           chmod +x src/Sources/Resources/cloudflared
+          rm -rf "$tmp"
           file src/Sources/Resources/cloudflared
+          src/Sources/Resources/cloudflared --version
 
       - name: Build .app bundle
         env:
