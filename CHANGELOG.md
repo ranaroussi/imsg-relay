@@ -11,6 +11,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sparkle auto-update release pipeline.** The release workflow now
+  signs each release artifact with an ED25519 keypair and updates
+  `appcast.xml` on every tag push, so existing installs auto-detect
+  new versions on their next poll.
+
+  New pieces:
+
+  - `scripts/sparkle-keygen.sh` — one-time keypair generator. Runs
+    Sparkle's `generate_keys` and writes the two halves into
+    `build/sparkle-keys/` (gitignored). Maintainer pastes them into
+    `SPARKLE_ED_PUBLIC_KEY` / `SPARKLE_ED_PRIVATE_KEY` secrets.
+  - `scripts/appcast-add.sh` — invoked by CI after notarization;
+    signs the release ZIP via Sparkle's `sign_update` and prepends a
+    fresh `<item>` block to `appcast.xml` using a small Python xml
+    edit (idempotent on re-run).
+  - `appcast.xml` — bootstrap RSS+Sparkle feed at the repo root,
+    pointed at by `SUFeedURL` in Info.plist. CI commits new entries
+    here automatically.
+  - `create-app-bundle.sh` now reads `SPARKLE_ED_PUBLIC_KEY` from the
+    environment and injects it into Info.plist's `SUPublicEDKey`. So
+    local dev builds boot with the updater disabled (the existing
+    "skip Sparkle if key is empty" code path), and CI builds boot
+    with the verifier wired in.
+  - `.github/workflows/release.yml` gets a new `appcast` job that
+    runs after `release`. It downloads the release artifacts,
+    rebuilds Sparkle helpers, runs `appcast-add.sh`, and pushes the
+    updated `appcast.xml` back to `main`.
+  - `docs/DISTRIBUTION.md` — one-stop guide for the maintainer's
+    one-time Apple Developer ID + Sparkle setup, the list of GitHub
+    secrets required, and the steps to publish + verify a release.
+
+  See [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) for the full
+  walkthrough. The release workflow gracefully no-ops the appcast
+  job when `SPARKLE_ED_PRIVATE_KEY` isn't set, so the workflow
+  still works on forks that haven't done the one-time setup.
+
 - **Contacts framework integration.** When the user grants the new
   Contacts permission, inbound events (`message.received`,
   `message.sent`, `message.reaction`) carry a `data.sender_name`

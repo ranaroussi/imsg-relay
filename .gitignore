@@ -36,3 +36,8 @@ logs/
 # Local dev
 *.local
 .env
+
+# Sparkle key material — must never be committed
+build/sparkle-keys/
+ed_private_key
+ed_public_key

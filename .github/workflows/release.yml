@@ -69,6 +69,7 @@ jobs:
           CODESIGN_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
           APP_VERSION: ${{ steps.version.outputs.version }}
           TARGET_ARCH: ${{ matrix.swift_arch }}
+          SPARKLE_ED_PUBLIC_KEY: ${{ secrets.SPARKLE_ED_PUBLIC_KEY }}
         run: |
           chmod +x create-app-bundle.sh
           ./create-app-bundle.sh
@@ -182,3 +183,70 @@ jobs:
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  appcast:
+    name: Update appcast.xml
+    needs: release
+    runs-on: macos-14
+    if: startsWith(github.ref, 'refs/tags/') && env.SPARKLE_ED_PRIVATE_KEY != ''
+    env:
+      SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Resolve version + build number
+        id: meta
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          BUILD_NUMBER="$(git rev-list --count HEAD)"
+          echo "version=$VERSION"             >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER"   >> "$GITHUB_OUTPUT"
+
+      - name: Build Sparkle helpers (need sign_update binary)
+        run: |
+          cd src && swift build -c release --product ImsgRelay
+          # The build produces Sparkle's bundle with sign_update inside.
+
+      - name: Append both arches to appcast.xml
+        run: |
+          ARM_ZIP="$(find artifacts -name 'imsg-relay-arm64.zip' | head -1)"
+          INTEL_ZIP="$(find artifacts -name 'imsg-relay-x86_64.zip' | head -1)"
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
+          NOTES_URL="https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
+
+          if [ -n "$ARM_ZIP" ]; then
+            ./scripts/appcast-add.sh \
+              --zip "$ARM_ZIP" \
+              --version "${{ steps.meta.outputs.version }}" \
+              --build "${{ steps.meta.outputs.build_number }}" \
+              --download-url "$BASE_URL/imsg-relay-arm64.zip" \
+              --notes-url "$NOTES_URL"
+          fi
+
+          # NOTE: Sparkle's <item> is one-per-channel, not one-per-arch.
+          # We only push the ARM64 entry — Intel users get the universal
+          # binary via the same enclosure URL (Sparkle picks the
+          # matching slice). If we ever ship truly arch-specific
+          # binaries we'd publish two channels with sparkle:channel
+          # filters; not needed at v0.
+
+      - name: Commit + push appcast.xml
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet appcast.xml; then
+            echo "appcast.xml unchanged — nothing to commit."
+            exit 0
+          fi
+          git add appcast.xml
+          git commit -m "chore(release): update appcast for ${{ github.ref_name }}"
+          git push origin main

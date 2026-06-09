@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+    <channel>
+        <title>iMessage Relay</title>
+        <link>https://raw.githubusercontent.com/ranaroussi/imsg-relay/main/appcast.xml</link>
+        <description>Auto-update feed for iMessage Relay (macOS menu bar app).</description>
+        <language>en</language>
+        <!-- Release entries are appended here automatically by the GitHub
+             Actions release workflow (.github/workflows/release.yml) via
+             scripts/appcast-add.sh. To publish a new release: tag v0.x.y
+             and push the tag; CI handles signing, notarization, EdDSA
+             signing of the ZIP, and updating this file. -->
+    </channel>
+</rss>

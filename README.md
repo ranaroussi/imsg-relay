@@ -541,9 +541,9 @@ All three prompts come from macOS itself. The app sits idle until they are grant
 | MCP stdio server (7 tools) | ✅ Shipping |
 | MCP HTTP server transport (tunnel-reachable) | ✅ Shipping (stateless `POST /mcp`) |
 | MCP HTTP/SSE streaming + sessions | 🚧 Out of scope for v0 (tools don't need server-initiated push) |
-| Sparkle 2 auto-updates | ✅ Wired (needs ED25519 key + appcast.xml in release pipeline) |
+| Sparkle 2 auto-updates | ✅ Wired end-to-end (see [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) for keygen + secrets) |
 | Developer ID signing + notarization | ✅ Local + CI |
-| Contacts name resolution on inbound events | 🚧 Stubbed |
+| Contacts name resolution on inbound events | ✅ Shipping (granted via Settings → General → Contacts) |
 | Settings: live tunnel URL with copy | ✅ Shipping |
 | Settings: live permissions checklist | 🚧 Static text; no real-time state yet |
 
@@ -551,7 +551,7 @@ All three prompts come from macOS itself. The app sits idle until they are grant
 
 ## Roadmap
 
-- [ ] Generate + ship Sparkle ED25519 keypair, automate `appcast.xml` publication from the release workflow
+
 
 - [ ] Settings → Status tab: live permission detection + buttons that jump to each pane
 - [ ] Tests target (skipped for the v0 slice to ship faster)
@@ -601,23 +601,38 @@ imsg-relay/
 
 ### Release
 
-Tag-based:
+Full step-by-step lives in [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md). The short version, once you've done the one-time maintainer setup (Apple Developer ID + Sparkle keypair):
 
 ```bash
 git tag v0.2.0
-git push --tags
+git push origin v0.2.0
 ```
 
 The `.github/workflows/release.yml` workflow then:
 
-1. Builds arm64 + x86_64 in matrix
-2. Downloads the right `cloudflared` per arch and embeds it
-3. Code-signs with Developer ID (cert from `APPLE_DEVELOPER_CERTIFICATE_P12_BASE64` secret)
-4. Notarizes via `notarytool`
-5. Packages DMG (with `create-dmg`) + ZIP, both with SHA-256 checksums
-6. Cuts a GitHub Release with auto-generated notes
+1. Builds arm64 + x86_64 in matrix.
+2. Downloads the right `cloudflared` per arch and embeds it.
+3. Code-signs with Developer ID (cert from `APPLE_DEVELOPER_CERTIFICATE_P12_BASE64` secret).
+4. Injects `SUPublicEDKey` into Info.plist from `SPARKLE_ED_PUBLIC_KEY` secret.
+5. Notarizes via `notarytool`.
+6. Packages DMG (`create-dmg`) + ZIP, both with SHA-256 checksums.
+7. Cuts a GitHub Release with auto-generated notes.
+8. Signs the release ZIP with `SPARKLE_ED_PRIVATE_KEY` via Sparkle's `sign_update`, prepends a new entry to `appcast.xml`, and commits it back to `main` — existing installs see the new version on their next daily poll.
 
-Required secrets in the repo: `APPLE_DEVELOPER_CERTIFICATE_P12_BASE64`, `APPLE_DEVELOPER_CERTIFICATE_PASSWORD`, `APPLE_DEVELOPER_ID_APPLICATION`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_SPECIFIC_PASSWORD`.
+Required GitHub secrets:
+
+| Secret | Source |
+|--------|--------|
+| `APPLE_DEVELOPER_CERTIFICATE_P12_BASE64` | base64 of the exported Developer ID Application .p12 |
+| `APPLE_DEVELOPER_CERTIFICATE_PASSWORD`   | password used during export |
+| `APPLE_DEVELOPER_ID_APPLICATION`         | full identity string from `security find-identity` |
+| `APPLE_ID`                               | your Apple ID email |
+| `APPLE_TEAM_ID`                          | 10-character team ID |
+| `APPLE_APP_SPECIFIC_PASSWORD`            | from appleid.apple.com → App-Specific Passwords |
+| `SPARKLE_ED_PUBLIC_KEY`                  | output of `./scripts/sparkle-keygen.sh` (also paste into Info.plist) |
+| `SPARKLE_ED_PRIVATE_KEY`                 | other output of `./scripts/sparkle-keygen.sh` (NEVER commit) |
+
+See [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) for how to obtain each one.
 
 ---
 
@@ -627,6 +642,7 @@ Required secrets in the repo: `APPLE_DEVELOPER_CERTIFICATE_P12_BASE64`, `APPLE_D
 - [`CHANGELOG.md`](CHANGELOG.md) — version history
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — technical deep-dive: concurrency model, process modes, lifecycle, data flow, dependency rationale
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — common issues and recovery steps
+- [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md) — one-time maintainer setup for code signing, notarization, and Sparkle auto-updates
 
 ---
 

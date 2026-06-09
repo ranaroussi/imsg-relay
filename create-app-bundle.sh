@@ -105,6 +105,18 @@ BUILD_NUMBER="$(git -C "$PROJECT_DIR" rev-list --count HEAD 2>/dev/null || echo 
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_DIR/Contents/Info.plist"
 ok "Version $VERSION (build $BUILD_NUMBER)"
 
+# Inject Sparkle EdDSA public key when provided by CI. Local dev builds
+# inherit whatever's already in Info.plist (typically empty during
+# bring-up; once you've run scripts/sparkle-keygen.sh and pasted the
+# pub key into Info.plist it'll be set there too). Sparkle aborts if
+# the key isn't a valid base64 string, so an empty value here means
+# "skip the updater" — AppDelegate handles that gracefully.
+if [ -n "${SPARKLE_ED_PUBLIC_KEY:-}" ]; then
+    /usr/libexec/PlistBuddy -c "Set :SUPublicEDKey ${SPARKLE_ED_PUBLIC_KEY}" "$APP_DIR/Contents/Info.plist" \
+        || /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string ${SPARKLE_ED_PUBLIC_KEY}" "$APP_DIR/Contents/Info.plist"
+    ok "Embedded Sparkle SUPublicEDKey"
+fi
+
 echo -n "APPL????" > "$APP_DIR/Contents/PkgInfo"
 
 log "Code signing"
