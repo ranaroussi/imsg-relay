@@ -457,11 +457,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// ID; the next `requestAccess` then prompts fresh and registers
     /// us in the Privacy pane.
     ///
+    /// Important: the TCC service name for the Contacts framework is
+    /// `AddressBook`, NOT `Contacts`. TCC carries the legacy name
+    /// from before the framework was renamed (AddressBook.framework
+    /// → Contacts.framework in macOS 10.11 / iOS 9). Passing
+    /// "Contacts" silently fails with `tccutil: Failed to reset
+    /// Contacts approval status...` and exit code 70. We use
+    /// "AddressBook" explicitly, which is the documented service
+    /// identifier in TCC.db (`kTCCServiceAddressBook`).
+    ///
     /// Notes:
     ///   - `tccutil reset <SERVICE> <BUNDLE_ID>` does NOT require
-    ///     sudo for apps the user owns. It can no-op (exit status
-    ///     != 0) if there's no existing TCC entry to reset — that's
-    ///     fine and we log-but-ignore.
+    ///     sudo for apps the user owns.
     ///   - We `waitUntilExit()` synchronously so the caller can
     ///     immediately follow up with `requestAccess()` against the
     ///     freshly-cleared state.
@@ -475,13 +482,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-        task.arguments = ["reset", "Contacts", bundleID]
+        task.arguments = ["reset", "AddressBook", bundleID]
         task.standardOutput = Pipe()
         task.standardError = Pipe()
         do {
             try task.run()
             task.waitUntilExit()
-            Log.contacts.info("tccutil reset Contacts \(bundleID, privacy: .public) → exit \(task.terminationStatus, privacy: .public)")
+            Log.contacts.info("tccutil reset AddressBook \(bundleID, privacy: .public) → exit \(task.terminationStatus, privacy: .public)")
         } catch {
             Log.contacts.error("tccutil reset failed: \(error.localizedDescription, privacy: .public)")
         }
