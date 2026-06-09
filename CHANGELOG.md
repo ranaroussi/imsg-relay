@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Named-mode tunnel start was silently broken by argv ordering.**
+  `cloudflared tunnel run --no-autoupdate --token <token>` is rejected
+  by `cloudflared` because `--no-autoupdate` is a `tunnel`-level flag,
+  not a `run`-subcommand flag. Result: cloudflared printed help and
+  exited cleanly (status 0) within ~40ms, leaving no trace in our
+  tunnel logs and no `cloudflared` process running. The connector
+  would never register, the named tunnel would stay `Inactive` on the
+  CF dashboard, and `https://<hostname>` would return CF error 1033.
+  Reordered to `tunnel --no-autoupdate run --token <token>` —
+  cloudflared now reaches the connection step normally.
+
+### Added
+
+- **Tunnel diagnostic logging.** `TunnelManager.start()` now logs at
+  every state transition: `start()` entry (with mode), binary path,
+  redacted argv, child PID, every line of cloudflared's stderr (at
+  debug level), the first matching URL/ready signal, and the child's
+  termination status + reason. Combined with the cleaner
+  `stop()` (which now escalates to `SIGKILL` after a 3-second
+  `SIGTERM` grace period and waits for reaping before returning),
+  diagnosing tunnel issues no longer requires guesswork about
+  whether cloudflared even spawned. Run:
+
+  ```bash
+  log show --predicate 'subsystem == "com.imsg-relay.app" && category == "tunnel"' \
+    --info --debug --last 5m
+  ```
+
+  to see the full trace. The argv log redacts the token as
+  `<redacted-token-N-chars>` so it never hits the system log even
+  at debug verbosity.
+
+- **App icon updated.** New 1024×1024 macOS app icon (green squircle
+  with the chat-bubble + `</>` mark matching the menu bar
+  template), generated as a complete `.icns` with all 10 required
+  sizes (16/32/128/256/512 at 1x and 2x). Replaces the placeholder.
+
 ### Changed
 
 - **Named-tunnel docs + Settings UX rewritten to make the

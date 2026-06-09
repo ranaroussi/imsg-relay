@@ -287,6 +287,41 @@ curl -sS https://imsg.yourcompany.com/health
 If `dig` is still empty after a minute, the auto-create failed —
 usually because a conflicting record exists. See the next section.
 
+### Named tunnel: cloudflared exits after <100ms with no apparent error
+
+This was a real bug present in builds before `e8b8353` and is fixed
+as of the next commit (the argv-ordering fix). If you ever see this
+symptom in older builds or future regressions, the diagnostic
+signature is unmistakable in the tunnel log:
+
+```bash
+log show --predicate 'subsystem == "com.imsg-relay.app" && category == "tunnel"' \
+  --info --debug --last 2m
+```
+
+Look for a sequence like:
+
+```
+... start() requested (port=7878, mode=named)
+... spawning cloudflared: tunnel run --no-autoupdate --token <redacted-token-184-chars>
+... cloudflared spawned, PID 16253
+... cloudflared exited (status=0, reason=1)        ← ~40ms after spawn
+```
+
+Status 0 with reason 1 (`NSTaskTerminationReasonExit`) plus a sub-100ms
+lifetime means cloudflared rejected the CLI and printed help. The
+fix lives in `TunnelManager.buildRuntime(port:)` — `--no-autoupdate`
+must be **before** `run`, not after.
+
+If you're on a recent build (post `e8b8353`) and still see fast
+exits, run cloudflared manually with the redacted argv from the log
+(filling in your real token) to see what it's complaining about:
+
+```bash
+"/Applications/iMessage Relay.app/Contents/Resources/cloudflared" \
+  tunnel --no-autoupdate run --token <paste-yours>
+```
+
 ### Named tunnel won't connect
 
 You picked **Named** mode in Settings, saved, but the Public URL row

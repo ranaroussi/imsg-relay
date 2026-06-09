@@ -381,7 +381,7 @@ branch on that mode:
 
 | | `.quick` (free) | `.named` (custom domain) |
 |---|---|---|
-| **`cloudflared` arguments** | `tunnel --no-autoupdate --url http://localhost:<port>` | `tunnel run --no-autoupdate --token <token>` |
+| **`cloudflared` arguments** | `tunnel --no-autoupdate --url http://localhost:<port>` | `tunnel --no-autoupdate run --token <token>` |
 | **Ingress config source** | The CLI's `--url` arg | The Cloudflare dashboard ("Public Hostnames" attached to the tunnel) |
 | **Public URL discovery** | Regex `https://[a-z0-9-]+\.trycloudflare\.com` against stderr | Watch stderr for `Registered tunnel connection`; URL is `https://<config.tunnelHostname>` |
 | **CF account needed** | No | Yes |
@@ -399,6 +399,15 @@ both modes:
 ```
 
 If none of those resolve, the user gets an alert with `brew install cloudflared` instructions and a "Copy install command" button.
+
+> **Argv ordering matters for named mode.** `--no-autoupdate` is a
+> `tunnel` subcommand flag, not a `run` flag, so it must appear
+> **before** `run`. Putting it after — `tunnel run --no-autoupdate
+> --token …` — makes `cloudflared` reject the CLI, print help, and
+> exit clean (status 0) within ~40ms, leaving no trace beyond a
+> short-lived child process. The diagnostic logging on
+> `TunnelManager.start()` exists in part to make this kind of fast
+> exit visible (see "Observability" below).
 
 #### Mode dispatch: `buildRuntime(port:)`
 

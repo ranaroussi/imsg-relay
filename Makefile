@@ -3,7 +3,7 @@
 # and release-artifact filenames stay kebab-case so we don't break tooling.
 APP_BUNDLE := iMessage Relay.app
 
-.PHONY: build release app install run clean test info help
+.PHONY: build release app install run clean test info help icon
 
 help: ## Show this help message
 	@echo "iMessage Relay - macOS iMessage gateway"
@@ -37,6 +37,18 @@ run: app ## Build and launch the app
 
 test: ## Run Swift unit tests
 	@cd src && swift test
+
+icon: ## Regenerate AppIcon.icns from assets/Icon-macOS-Default-1024x1024@2x.png
+	@echo "Regenerating AppIcon.icns from source artwork..."
+	@SRC="assets/Icon-macOS-Default-1024x1024@2x.png"; \
+	WORK=$$(mktemp -d)/AppIcon.iconset; \
+	mkdir -p "$$WORK"; \
+	for pair in "16 16x16" "32 16x16@2x" "32 32x32" "64 32x32@2x" "128 128x128" "256 128x128@2x" "256 256x256" "512 256x256@2x" "512 512x512" "1024 512x512@2x"; do \
+	  size=$${pair%% *}; name=$${pair##* }; \
+	  sips -z $$size $$size "$$SRC" --out "$$WORK/icon_$$name.png" > /dev/null; \
+	done; \
+	iconutil -c icns "$$WORK" -o src/Sources/Resources/AppIcon.icns; \
+	echo "Wrote src/Sources/Resources/AppIcon.icns ($$(ls -la src/Sources/Resources/AppIcon.icns | awk '{print $$5}') bytes)"
 
 clean: ## Remove build artifacts
 	@rm -rf src/.build

@@ -60,22 +60,38 @@ final class TunnelManager: @unchecked Sendable {
     /// public URL once cloudflared prints it (typically <5s) or `nil` on
     /// timeout/failure.
     func start(port: Int, completion: @escaping @Sendable (String?) -> Void) {
+        let mode = AppConfigStore.shared.current.tunnelMode
+        Log.tunnel.info("start() requested (port=\(port), mode=\(mode.rawValue, privacy: .public))")
+
         guard !isRunning else {
+            Log.tunnel.notice("start() short-circuited: tunnel already running (publicURL=\(self.publicURL ?? "nil", privacy: .public))")
             completion(publicURL)
             return
         }
         guard let execPath = locateCloudflared() else {
+            Log.tunnel.error("start() failed: cloudflared binary not found in bundle or on PATH")
             DispatchQueue.main.async { self.showInstallInstructions() }
             completion(nil)
             return
         }
+        Log.tunnel.info("using cloudflared at \(execPath, privacy: .public)")
 
         guard let runtime = buildRuntime(port: port) else {
-            // Named mode with missing token / hostname. The build
-            // helper already showed the actionable alert.
+            // buildRuntime already logged the specific reason
+            // (named-mode misconfig). Return silently here.
             completion(nil)
             return
         }
+
+        // Log the argv (redact the token if present so it doesn't
+        // hit the system log).
+        let safeArgs = runtime.arguments.enumerated().map { idx, arg -> String in
+            if idx > 0, runtime.arguments[idx - 1] == "--token" {
+                return "<redacted-token-\(arg.count)-chars>"
+            }
+            return arg
+        }
+        Log.tunnel.info("spawning cloudflared: \(safeArgs.joined(separator: " "), privacy: .public)")
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: execPath)
@@ -90,6 +106,14 @@ final class TunnelManager: @unchecked Sendable {
         let consume: @Sendable (FileHandle) -> Void = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+
+            // Surface the raw stderr too — at debug level only so we
+            // don't spam the log in steady state, but available when
+            // diagnosing connection failures.
+            for line in text.split(separator: "\n") where !line.isEmpty {
+                Log.tunnel.debug("cloudflared: \(line, privacy: .public)")
+            }
+
             guard let url = runtime.urlExtractor(text) else { return }
             guard let self else { return }
             self.urlLock.lock()
@@ -97,7 +121,7 @@ final class TunnelManager: @unchecked Sendable {
             self.publicURL = url
             self.urlLock.unlock()
             guard firstTime else { return }
-            Log.tunnel.info("cloudflared URL: \(url, privacy: .public)")
+            Log.tunnel.info("cloudflared URL ready: \(url, privacy: .public)")
             resolver.fire(url)
             self.relay?.relay(
                 type: .tunnelChanged,
@@ -114,7 +138,10 @@ final class TunnelManager: @unchecked Sendable {
         stdout.fileHandleForReading.readabilityHandler = consume
         stderr.fileHandleForReading.readabilityHandler = consume
 
-        process.terminationHandler = { [weak self] _ in
+        process.terminationHandler = { [weak self] proc in
+            let status = proc.terminationStatus
+            let reason = proc.terminationReason
+            Log.tunnel.notice("cloudflared exited (status=\(status), reason=\(reason.rawValue))")
             stdout.fileHandleForReading.readabilityHandler = nil
             stderr.fileHandleForReading.readabilityHandler = nil
             DispatchQueue.main.async {
@@ -132,6 +159,7 @@ final class TunnelManager: @unchecked Sendable {
             try process.run()
             self.process = process
             isRunning = true
+            Log.tunnel.info("cloudflared spawned, PID \(process.processIdentifier)")
             relay?.relay(type: .tunnelConnected, payload: AnyCodable([:] as [String: Any]))
             Task { @MainActor in TunnelStatus.shared.isRunning = true }
 
@@ -144,10 +172,35 @@ final class TunnelManager: @unchecked Sendable {
         }
     }
 
+    /// Stop the supervised cloudflared. Sends SIGTERM, gives it up to
+    /// 3 seconds to exit cleanly, then escalates to SIGKILL.
+    /// Returning synchronously from `stop()` matters because the
+    /// `configChanged` smart-restart immediately calls `start()` next
+    /// and a stale child would make the new one register against the
+    /// wrong tunnel — or fail to register at all if a port is bound.
     func stop() {
-        guard isRunning else { return }
-        process?.terminate()
-        process = nil
+        guard isRunning, let process else { return }
+        let pid = process.processIdentifier
+        Log.tunnel.info("stop() sending SIGTERM to cloudflared PID \(pid)")
+        process.terminate()
+
+        // Wait briefly for graceful shutdown.
+        let deadline = Date().addingTimeInterval(3.0)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        if process.isRunning {
+            Log.tunnel.notice("cloudflared PID \(pid) didn't exit on SIGTERM, escalating to SIGKILL")
+            kill(pid, SIGKILL)
+            // Brief wait for the kernel to reap.
+            let killDeadline = Date().addingTimeInterval(1.0)
+            while process.isRunning && Date() < killDeadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
+
+        self.process = nil
         isRunning = false
         publicURL = nil
         Task { @MainActor in
@@ -191,8 +244,15 @@ final class TunnelManager: @unchecked Sendable {
             // connections is healthy. First match flips us into
             // "ready" and surfaces the configured hostname as the
             // public URL.
+            //
+            // Argument order matters: `--no-autoupdate` is a `tunnel`
+            // subcommand flag, not a `run` subcommand flag. Place it
+            // BEFORE `run` or cloudflared rejects it with
+            // "flag provided but not defined", prints help, and
+            // exits 0 within ~40ms — the symptom that hid the named-
+            // mode failure prior to this fix.
             return Runtime(
-                arguments: ["tunnel", "run", "--no-autoupdate", "--token", token],
+                arguments: ["tunnel", "--no-autoupdate", "run", "--token", token],
                 urlExtractor: { text in
                     text.contains("Registered tunnel connection") ? publicURL : nil
                 }
