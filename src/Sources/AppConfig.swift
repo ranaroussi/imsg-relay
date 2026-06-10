@@ -80,6 +80,36 @@ struct AppConfig: Codable, Equatable, Sendable {
     /// the scheme at display / event-emission time.
     var tunnelHostname: String
 
+    // MARK: - Attachments
+
+    /// When true, the `/attachments/:msg_id/:index` route is served
+    /// without bearer-token authentication so any caller can fetch
+    /// attachment bytes by URL. Off by default.
+    var attachmentsPublic: Bool
+
+    // MARK: - Local archive
+
+    /// When true, every inbound message is mirrored to disk under
+    /// `localSavePath` in addition to being relayed over HTTP.
+    var localSaveEnabled: Bool
+
+    /// Root directory for the local archive. Each message gets a
+    /// `<rowID>/` sub-folder containing `message.json`, `MESSAGE.txt`,
+    /// and `attachments/`.
+    var localSavePath: String
+
+    // MARK: - Filter
+
+    /// If non-empty, only messages whose sender matches one of these
+    /// handles are processed (after normalization). All other
+    /// messages are silently dropped.
+    var whitelistHandles: [String]
+
+    /// Messages whose sender matches any of these handles are silently
+    /// dropped (unless the whitelist is non-empty, in which case the
+    /// whitelist wins).
+    var blacklistHandles: [String]
+
     static let `default` = AppConfig(
         serverIdentifier: "",
         serverEndpoint: "",
@@ -92,7 +122,12 @@ struct AppConfig: Codable, Equatable, Sendable {
         backfillOnRestart: false,
         tunnelMode: .quick,
         tunnelToken: "",
-        tunnelHostname: ""
+        tunnelHostname: "",
+        attachmentsPublic: false,
+        localSaveEnabled: false,
+        localSavePath: "",
+        whitelistHandles: [],
+        blacklistHandles: []
     )
 
     // Custom decoder so we can extend `AppConfig` with new fields
@@ -115,6 +150,11 @@ struct AppConfig: Codable, Equatable, Sendable {
         self.tunnelMode        = (try? c.decode(TunnelMode.self, forKey: .tunnelMode))        ?? d.tunnelMode
         self.tunnelToken       = (try? c.decode(String.self,     forKey: .tunnelToken))       ?? d.tunnelToken
         self.tunnelHostname    = (try? c.decode(String.self,     forKey: .tunnelHostname))    ?? d.tunnelHostname
+        self.attachmentsPublic = (try? c.decode(Bool.self,       forKey: .attachmentsPublic)) ?? d.attachmentsPublic
+        self.localSaveEnabled  = (try? c.decode(Bool.self,       forKey: .localSaveEnabled))  ?? d.localSaveEnabled
+        self.localSavePath     = (try? c.decode(String.self,     forKey: .localSavePath))     ?? d.localSavePath
+        self.whitelistHandles  = (try? c.decode([String].self,  forKey: .whitelistHandles))  ?? d.whitelistHandles
+        self.blacklistHandles  = (try? c.decode([String].self,  forKey: .blacklistHandles))  ?? d.blacklistHandles
     }
 
     // Memberwise init for `.default` and direct construction sites.
@@ -130,7 +170,12 @@ struct AppConfig: Codable, Equatable, Sendable {
         backfillOnRestart: Bool,
         tunnelMode: TunnelMode,
         tunnelToken: String,
-        tunnelHostname: String
+        tunnelHostname: String,
+        attachmentsPublic: Bool = false,
+        localSaveEnabled: Bool = false,
+        localSavePath: String = "",
+        whitelistHandles: [String] = [],
+        blacklistHandles: [String] = []
     ) {
         self.serverIdentifier = serverIdentifier
         self.serverEndpoint = serverEndpoint
@@ -144,6 +189,11 @@ struct AppConfig: Codable, Equatable, Sendable {
         self.tunnelMode = tunnelMode
         self.tunnelToken = tunnelToken
         self.tunnelHostname = tunnelHostname
+        self.attachmentsPublic = attachmentsPublic
+        self.localSaveEnabled = localSaveEnabled
+        self.localSavePath = localSavePath
+        self.whitelistHandles = whitelistHandles
+        self.blacklistHandles = blacklistHandles
     }
 }
 

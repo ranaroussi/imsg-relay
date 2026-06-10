@@ -13,6 +13,11 @@ struct SettingsView: View {
     @State private var showAdvancedPorts = false
     @State private var launchOnLogin: Bool = SMAppService.mainApp.status == .enabled
 
+    // Transient UI state for array fields (stored as comma-separated).
+    @State private var whitelistText: String = AppConfigStore.shared.current.whitelistHandles.joined(separator: ", ")
+    @State private var blacklistText: String = AppConfigStore.shared.current.blacklistHandles.joined(separator: ", ")
+    @State private var localSavePathError: String? = nil
+
     var body: some View {
         VStack(spacing: 0) {
             TabView {
@@ -28,6 +33,8 @@ struct SettingsView: View {
         .frame(width: 640, height: 600)
         .onReceive(NotificationCenter.default.publisher(for: AppConfigStore.didChangeNotification)) { _ in
             config = AppConfigStore.shared.current
+            whitelistText = config.whitelistHandles.joined(separator: ", ")
+            blacklistText = config.blacklistHandles.joined(separator: ", ")
         }
     }
 
@@ -72,6 +79,67 @@ struct SettingsView: View {
                     stepperField(value: $config.maxRetryAttempts, range: 1...64, width: 70)
                 }
             }
+
+            section("Local archive") {
+                row("Save messages locally",
+                    help: "Mirrors every inbound message to disk under the path below, in addition to relaying over HTTP.") {
+                    Toggle("", isOn: $config.localSaveEnabled)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                }
+                if config.localSaveEnabled {
+                    rowDivider
+                    HStack(alignment: .center, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Archive path")
+                            Text("Each message gets <path>/<id>/message.json, MESSAGE.txt, and attachments/")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 12)
+                        HStack(spacing: 6) {
+                            TextField("~/Downloads/imsg-archive", text: $config.localSavePath)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 240)
+                            Button("Pick…") {
+                                pickLocalSavePath()
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    if let error = localSavePathError {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
+                    }
+                }
+            }
+
+            section("Filter") {
+                row("Only from these handles",
+                    help: "If any handles are listed, all other senders are silently dropped. Leave empty to allow all. One or comma-separated.") {
+                    TextField("e.g. +14155550123, alice@example.com", text: $whitelistText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 280)
+                }
+                rowDivider
+                row("Never from these handles",
+                    help: "Messages from these senders are silently dropped. Ignored when the whitelist above is non-empty.") {
+                    TextField("e.g. +14155559999, spam@example.com", text: $blacklistText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 280)
+                }
+            }
         }
     }
 
@@ -85,6 +153,13 @@ struct SettingsView: View {
                     SecureField("", text: $config.bearerToken)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 280)
+                }
+                rowDivider
+                row("Public attachments",
+                    help: "When ON, anyone can fetch attachment bytes via URL without the bearer token. The rest of the API still requires auth.") {
+                    Toggle("", isOn: $config.attachmentsPublic)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
                 }
             }
 
@@ -459,10 +534,65 @@ struct SettingsView: View {
     }
 
     private func save() {
-        AppConfigStore.shared.update { $0 = config }
+        var next = config
+        next.whitelistHandles = Self.parseHandles(whitelistText)
+        next.blacklistHandles = Self.parseHandles(blacklistText)
+
+        // Validate local save path when enabled
+        if next.localSaveEnabled, !next.localSavePath.isEmpty {
+            if let error = Self.validateLocalSavePath(next.localSavePath) {
+                localSavePathError = error
+                return
+            }
+        }
+        localSavePathError = nil
+
+        AppConfigStore.shared.update { $0 = next }
         justSaved = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
             justSaved = false
+        }
+    }
+
+    /// Split comma / newline / whitespace separated handles into a
+    /// clean array. Empty entries are dropped.
+    private static func parseHandles(_ raw: String) -> [String] {
+        raw
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Returns an error string if the path is not writable, nil if OK.
+    private static func validateLocalSavePath(_ raw: String) -> String? {
+        let expanded = (raw as NSString).expandingTildeInPath
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: expanded) {
+            do {
+                try fm.createDirectory(atPath: expanded, withIntermediateDirectories: true)
+            } catch {
+                return "Cannot create directory: \(error.localizedDescription)"
+            }
+        }
+        let testFile = (expanded as NSString).appendingPathComponent(".imsg_write_test")
+        do {
+            try Data().write(to: URL(fileURLWithPath: testFile))
+            try? fm.removeItem(atPath: testFile)
+        } catch {
+            return "Directory is not writable"
+        }
+        return nil
+    }
+
+    /// Opens an NSOpenPanel so the user can pick the archive folder.
+    private func pickLocalSavePath() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        if panel.runModal() == .OK, let url = panel.url {
+            config.localSavePath = url.path
         }
     }
 

@@ -371,7 +371,16 @@ struct BearerAuthMiddleware: RouterMiddleware {
         context: Context,
         next: (Request, Context) async throws -> Response
     ) async throws -> Response {
-        let configured = AppConfigStore.shared.current.bearerToken
+        let config = AppConfigStore.shared.current
+
+        // Public attachments: skip bearer check for GET /attachments/…
+        if config.attachmentsPublic,
+           request.method == .get,
+           request.uri.path.hasPrefix("/attachments/") {
+            return try await next(request, context)
+        }
+
+        let configured = config.bearerToken
         if configured.isEmpty {
             return try await next(request, context)
         }

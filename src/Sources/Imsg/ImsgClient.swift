@@ -133,6 +133,15 @@ actor ImsgClient {
     private func handle(message: Message) {
         queue.setCursor(Self.cursorKey, String(message.rowID))
 
+        let config = AppConfigStore.shared.current
+
+        // ── Whitelist / Blacklist filter ────────────────────────────
+        let sender = message.sender
+        if !Self.shouldProcess(sender: sender, config: config) {
+            Log.imsg.info("dropped message \(message.rowID) from \(sender, privacy: .public) (filter)")
+            return
+        }
+
         let type: EventType
         if message.isReaction {
             type = .messageReaction
@@ -151,6 +160,109 @@ actor ImsgClient {
             payload["attachments"] = encodeAttachments(for: message)
         }
         relay?.relay(type: type, payload: AnyCodable(payload))
+
+        // ── Local archive (fire-and-forget) ─────────────────────────
+        if config.localSaveEnabled, !config.localSavePath.isEmpty {
+            let jsonData = try? JSONSerialization.data(
+                withJSONObject: payload,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+            )
+            let attachmentSources: [(source: String, dest: String)] = (try? store.attachments(for: message.rowID))?.compactMap { meta in
+                guard !meta.missing else { return nil }
+                let src = ((meta.convertedPath ?? meta.originalPath) as NSString).expandingTildeInPath
+                let name = meta.transferName.isEmpty ? meta.filename : meta.transferName
+                return (src, name)
+            } ?? []
+            Task.detached(priority: .utility) {
+                try? await Self.archiveToDisk(
+                    rowID: message.rowID,
+                    jsonData: jsonData,
+                    text: Self.friendlyMessageText(message.text),
+                    attachmentSources: attachmentSources,
+                    config: config
+                )
+            }
+        }
+    }
+
+    // MARK: - Filter helpers
+
+    /// Normalize a handle for whitelist / blacklist comparison.
+    ///   • Email addresses: trimmed, lowercased.
+    ///   • Phone numbers: stripped of all non-digit characters.
+    ///   • Everything else: trimmed.
+    private static func normalizedHandle(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.contains("@") {
+            return trimmed.lowercased()
+        }
+        // Phone: keep only digits (strips +, spaces, parens, dashes).
+        let digits = trimmed.filter { $0.isNumber }
+        return digits.isEmpty ? trimmed : digits
+    }
+
+    /// Returns `true` if the message should be processed given the
+    /// current whitelist / blacklist configuration.
+    private static func shouldProcess(sender: String, config: AppConfig) -> Bool {
+        let normalizedSender = normalizedHandle(sender)
+        if normalizedSender.isEmpty { return true }
+
+        let whitelist = config.whitelistHandles.map(normalizedHandle).filter { !$0.isEmpty }
+        if !whitelist.isEmpty {
+            return whitelist.contains(normalizedSender)
+        }
+
+        let blacklist = config.blacklistHandles.map(normalizedHandle).filter { !$0.isEmpty }
+        if blacklist.contains(normalizedSender) {
+            return false
+        }
+        return true
+    }
+
+    // MARK: - Local archive
+
+    /// Write the message envelope, text, and attachments to disk under
+    /// `<localSavePath>/<rowID>/`. Static + detached so relay latency
+    /// is unaffected.
+    private static func archiveToDisk(
+        rowID: Int64,
+        jsonData: Data?,
+        text: String,
+        attachmentSources: [(source: String, dest: String)],
+        config: AppConfig
+    ) async throws {
+        let root = (config.localSavePath as NSString).expandingTildeInPath
+        let folder = URL(fileURLWithPath: root)
+            .appendingPathComponent("\(rowID)", isDirectory: true)
+
+        let fm = FileManager.default
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        // 1. message.json — same envelope the webhook receives
+        if let jsonData {
+            try jsonData.write(to: folder.appendingPathComponent("message.json"))
+        }
+
+        // 2. MESSAGE.txt — just the body text
+        try text.write(to: folder.appendingPathComponent("MESSAGE.txt"),
+                       atomically: true, encoding: .utf8)
+
+        // 3. Attachments
+        if !attachmentSources.isEmpty {
+            let attFolder = folder.appendingPathComponent("attachments", isDirectory: true)
+            try fm.createDirectory(at: attFolder, withIntermediateDirectories: true)
+
+            for item in attachmentSources {
+                let sourceURL = URL(fileURLWithPath: item.source)
+                let destURL = attFolder.appendingPathComponent(item.dest)
+                if fm.fileExists(atPath: destURL.path) {
+                    try? fm.removeItem(at: destURL)
+                }
+                try? fm.copyItem(at: sourceURL, to: destURL)
+            }
+        }
+
+        Log.imsg.info("archived message \(rowID) to \(folder.path, privacy: .public)")
     }
 
     /// Resolve and serialize a message's attachments into JSON-safe
