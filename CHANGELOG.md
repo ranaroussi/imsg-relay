@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.2] — 2026-06-10
+
+### Added
+
+- **Public attachments toggle.** Settings → Inbound → Auth → *Public
+  attachments* removes bearer-token authentication from `GET
+  /attachments/:msg_id/:index` while keeping all other routes
+  (`/status`, `/chats`, `/history`, `/send`, `/mcp`) protected. Useful
+  for hot-linking image URLs in Slack/Discord markdown or for AI
+  agents that render inline images without proxying bytes.
+
+- **Local message archive.** Settings → Outbound → *Local archive*
+  mirrors every inbound message to a user-chosen folder:
+    - `<path>/<rowID>/message.json` — full webhook payload (identical
+      JSON the remote endpoint receives).
+    - `<path>/<rowID>/MESSAGE.txt` — body text only, post-U+FFFC
+      `[attachment]` substitution.
+    - `<path>/<rowID>/attachments/` — copied files from
+      `~/Library/Messages/Attachments/` (HEIC→JPEG transcoded where
+      applicable).
+  Fire-and-forget detached task; errors are logged but never block
+  the relay queue. Idempotent on restart (same rowID overwrites).
+  Path is validated on Save (writable-directory probe); Pick button
+  opens NSOpenPanel.
+
+- **Sender whitelist / blacklist.** Settings → Outbound → *Advanced —
+  sender filter* (collapsed DisclosureGroup) with two multi-line
+  TextEditors:
+    - *Only from these handles* — whitelist; non-empty means only
+      matched senders are processed.
+    - *Never from these handles* — blacklist; dropped when whitelist
+      is empty.
+  Handle normalization: phone numbers stripped to digits-only (so
+  `+1 (415) 555-0123` matches `14155550123` and `+14155550123`),
+  emails lowercased. Comma or newline separated.
+
+### Changed
+
+- README updated with feature table rows, "Why iMessage Relay"
+  bullets, and dedicated subsections for all three new features.
+- Config table rebuilt to include new fields (Public attachments,
+  Save messages locally, Archive path, whitelist/blacklist).
+
 ## [0.1.1] — 2026-06-09
 
 ### Changed

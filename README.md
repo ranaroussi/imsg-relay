@@ -48,6 +48,9 @@ Shipped as a native macOS menu bar app, code-signed and notarized, with Sparkle 
 | **Inbound + outbound attachments** | Inbound: every event with an attachment carries metadata + a tunnel URL the recipient backend can fetch the bytes from (with HEIC→JPEG transcode). Outbound: raw bytes via REST or base64 via MCP, both 100 MB. | [below](#both-directions-on-attachments) |
 | **Cloudflare Tunnel, two modes** | **Free** `*.trycloudflare.com` for zero-setup demos. **Named** for a stable hostname AI clients can hardcode. The same connector token, supervised by the app, surfaced as `server.callback_url` on every event. | [below](#cloudflare-tunnel-two-modes) |
 | **Contact name resolution** | Optional Contacts integration enriches every inbound event + history response with `sender_name` and `reply_to_sender_name` resolved from your Mac's address book. | [below](#contact-name-resolution) |
+| **Public attachments** | Toggle off bearer-token auth for `GET /attachments/:msg_id/:index` so attachment URLs can be shared or hot-linked directly. Rest of the API stays protected. | [below](#public-attachments) |
+| **Local message archive** | Mirror every inbound message to a folder on disk: `message.json` (full webhook payload), `MESSAGE.txt` (body only), plus `attachments/` with copied files. Independent of the HTTP relay. | [below](#local-message-archive) |
+| **Sender whitelist / blacklist** | Only relay messages from allowed handles, or silently drop spam / unwanted numbers. Normalized for phone numbers (digits only) and emails (lowercased). | [below](#sender-filter) |
 | **Native macOS UX** | Menu bar icon, SwiftUI settings window matching System Settings' grouped form style, friendly Full Disk Access prompt, Sparkle 2 auto-updates. | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | **Signed + notarized releases** | GitHub Actions builds arm64 + x86_64 DMG/ZIP artifacts with Developer ID signing, Apple notarization, EdDSA-signed Sparkle appcast — everything you need to ship to real users. | [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) |
 | **Pure SwiftPM build** | One `make app` and you have a working bundle. No Xcode project, no `.xcworkspace`, no `pbxproj` to merge-conflict on. | [Development](#development) |
@@ -180,6 +183,9 @@ iMessage Relay is the third option: **a thin native app that turns the Mac you a
 - **An MCP server** with seven tools, exposed both over stdio (for local Claude Desktop) and over HTTP through a Cloudflare Tunnel (for any remote AI agent that speaks MCP). Same tool catalog, two transports.
 - **A Cloudflare Tunnel supervisor** built in, with two modes (free `*.trycloudflare.com` or your own stable domain) so your backend can reach the relay from anywhere — no port forwarding, no VPN, no public IP. Every event payload includes the live tunnel URL.
 - **Attachments in both directions.** Inbound events carry attachment metadata + a tunnel URL you can fetch the bytes from on demand (with HEIC→JPEG transcode for compatibility); outbound `POST /send/attachment` accepts raw bytes for any file type.
+- **Public attachments.** Optional toggle removes bearer-token auth from attachment fetch URLs so they can be shared, embedded, or hot-linked directly — useful when your backend just needs to forward an image URL to another service without proxying the bytes.
+- **Local message archive.** Optional disk mirror: every inbound message gets its own `<rowID>/` folder with `message.json` (full payload), `MESSAGE.txt` (body only), and `attachments/` with copied files. Survives even if your webhook endpoint is down.
+- **Sender whitelist / blacklist.** Advanced filter: only process messages from specific handles, or silently drop known spam numbers. Phone numbers are normalized to digits-only (so `+1 (415) 555-0123` matches `14155550123`), emails are lowercased.
 - **Contact name resolution.** Optional Contacts framework integration enriches every event with `sender_name` resolved from your Mac's address book.
 
 The philosophy:
@@ -418,6 +424,49 @@ The same enrichment appears on `GET /history` and `GET /search/messages`, so the
 
 > **Why the prompt is gated behind a button instead of auto-prompting on launch:** the relay is an `LSUIElement` (menu bar) app, and TCC refuses to display permission dialogs to apps without foreground activation. Auto-requesting on boot would silently deny and cache that deny forever. The Settings button activates the app first so the prompt shows up correctly.
 
+### Public attachments
+
+By default every route on the local HTTP API — including `GET /attachments/:msg_id/:index` — requires the bearer token configured in **Settings → Inbound → Auth**. Toggle **Public attachments** ON and attachment fetch URLs no longer need auth. This is useful when:
+
+- Your backend needs to forward an image URL to Slack/Discord/Telegram rather than proxy the bytes.
+- An AI agent renders markdown with an inline image that references the tunnel directly.
+- You want to share a photo with someone without giving them your bearer token.
+
+The rest of the API (`/status`, `/chats`, `/history`, `/send`, `/mcp`, …) stays protected regardless of this toggle.
+
+### Local message archive
+
+Toggle **Save messages locally** in **Settings → Outbound → Local archive** and pick a folder. Every inbound message gets mirrored to disk in a `<rowID>/` sub-folder:
+
+```
+/path/to/archive/
+  19592/
+    message.json          ← full webhook payload (same JSON your endpoint receives)
+    MESSAGE.txt           ← body text only, post-U+FFFC substitution
+    attachments/
+      IMG_1234.jpg        ← copied from ~/Library/Messages/Attachments/ (HEIC→JPEG transcoded)
+      photo.png
+```
+
+The archive runs fire-and-forget: it never blocks the relay, never retries, and logs errors to Console. If the folder is on an external drive that unmounts, the write fails silently and the HTTP relay continues unaffected. The archive is idempotent on restart (same `rowID` overwrites previous files), so backfill + restart is safe.
+
+### Sender filter
+
+Expand **Advanced — sender filter** in **Settings → Outbound** to enable whitelist / blacklist rules. One handle per line (or comma-separated). The filter is evaluated on every inbound message before it enters the relay queue or the local archive:
+
+- **Only from these handles** — if non-empty, only messages whose sender matches one of these handles are processed. Everything else is silently dropped.
+- **Never from these handles** — messages from these senders are silently dropped. Ignored when the whitelist is non-empty.
+
+Handle normalization makes the rules forgiving:
+
+| What you type | Matches `chat.db` value |
+|---|---|
+| `+1 (415) 555-0123` | `+14155550123`, `14155550123`, `+1 415-555-0123` |
+| `Alice@Example.COM` | `alice@example.com` |
+| `bob@gmail.com` | `Bob@Gmail.COM` |
+
+Phone numbers are stripped to digits only; emails are lowercased. This means you can copy-paste a number straight from Contacts (with formatting) and it'll match the E.164 or national variant stored in `chat.db`.
+
 ## Architecture
 
 ```
@@ -526,7 +575,12 @@ Click the menu bar icon → **Settings…** and fill in:
 | Outbound | **Include reactions (tapbacks)** | on | When off, reactions are dropped at the watcher and never enter the queue. |
 | Outbound | **Backfill missed messages on restart** | off | When on, messages received while iMessage Relay was offline get relayed once it restarts. Off by default so a long quit period doesn't dump multi-day history at once. |
 | Outbound | **Max retry attempts** | `12` | Each attempt waits `min(60, 2^n) + jitter` seconds. After this many failures an event is parked as `dead`. |
+| Outbound | **Save messages locally** | off | Mirrors every inbound message to disk under the path below, in addition to relaying over HTTP. |
+| Outbound | **Archive path** | (empty) | Root folder for the local archive. Each message gets `<path>/<rowID>/message.json`, `MESSAGE.txt`, and `attachments/`. Pick button opens NSOpenPanel. |
+| Outbound → Advanced | **Only from these handles** | (empty) | Whitelist: if non-empty, only these senders are processed. One per line, phone numbers normalized to digits, emails lowercased. |
+| Outbound → Advanced | **Never from these handles** | (empty) | Blacklist: messages from these senders are silently dropped. Ignored when whitelist is non-empty. |
 | Inbound | **Bearer token** | (empty) | Sent as `Authorization: Bearer <token>` on outbound webhook POSTs *and* required on incoming local API / MCP / attachment calls. One secret, both directions. Leave blank for dev. |
+| Inbound | **Public attachments** | off | When ON, `GET /attachments/:msg_id/:index` bypasses bearer-token auth. Rest of the API still requires auth. |
 | Inbound | **Enable Cloudflare Tunnel** | off | Spawns `cloudflared` and reveals the live public URL inline with a copy button (Free mode only — in Named mode the hostname is what you typed). |
 | Inbound | **Tunnel mode** | Free | `Free` (ephemeral `*.trycloudflare.com` URL) or `Named (custom)` (stable hostname you bring). See [Tunnel modes](#cloudflare-tunnel-two-modes). |
 | Inbound | **Tunnel token** | (empty) | (Named mode only) Cloudflare connector token from the Zero Trust dashboard. Stored as a secret. |
