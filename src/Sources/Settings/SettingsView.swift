@@ -11,11 +11,12 @@ struct SettingsView: View {
     @State private var contactsStatus: CNAuthorizationStatus = ContactsResolver.authorizationStatus()
     @State private var contactsRequestInFlight = false
     @State private var showAdvancedPorts = false
+    @State private var showAdvancedFilter = false
     @State private var launchOnLogin: Bool = SMAppService.mainApp.status == .enabled
 
-    // Transient UI state for array fields (stored as comma-separated).
-    @State private var whitelistText: String = AppConfigStore.shared.current.whitelistHandles.joined(separator: ", ")
-    @State private var blacklistText: String = AppConfigStore.shared.current.blacklistHandles.joined(separator: ", ")
+    // Transient UI state for array fields (stored one-per-line).
+    @State private var whitelistText: String = AppConfigStore.shared.current.whitelistHandles.joined(separator: "\n")
+    @State private var blacklistText: String = AppConfigStore.shared.current.blacklistHandles.joined(separator: "\n")
     @State private var localSavePathError: String? = nil
 
     var body: some View {
@@ -33,8 +34,8 @@ struct SettingsView: View {
         .frame(width: 640, height: 600)
         .onReceive(NotificationCenter.default.publisher(for: AppConfigStore.didChangeNotification)) { _ in
             config = AppConfigStore.shared.current
-            whitelistText = config.whitelistHandles.joined(separator: ", ")
-            blacklistText = config.blacklistHandles.joined(separator: ", ")
+            whitelistText = config.whitelistHandles.joined(separator: "\n")
+            blacklistText = config.blacklistHandles.joined(separator: "\n")
         }
     }
 
@@ -125,20 +126,44 @@ struct SettingsView: View {
                 }
             }
 
-            section("Filter") {
-                row("Only from these handles",
-                    help: "If any handles are listed, all other senders are silently dropped. Leave empty to allow all. One or comma-separated.") {
-                    TextField("e.g. +14155550123, alice@example.com", text: $whitelistText)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 280)
+            DisclosureGroup(isExpanded: $showAdvancedFilter) {
+                sectionCard {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Only from these handles")
+                            .font(.callout)
+                        Text("If any handles are listed, all other senders are silently dropped. Leave empty to allow all.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        TextEditor(text: $whitelistText)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(minHeight: 60, maxHeight: 120)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .stroke(Color(NSColor.separatorColor).opacity(0.6), lineWidth: 0.5)
+                            )
+
+                        Divider().padding(.vertical, 4)
+
+                        Text("Never from these handles")
+                            .font(.callout)
+                        Text("Messages from these senders are silently dropped. Ignored when the whitelist above is non-empty.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        TextEditor(text: $blacklistText)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(minHeight: 60, maxHeight: 120)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .stroke(Color(NSColor.separatorColor).opacity(0.6), lineWidth: 0.5)
+                            )
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
                 }
-                rowDivider
-                row("Never from these handles",
-                    help: "Messages from these senders are silently dropped. Ignored when the whitelist above is non-empty.") {
-                    TextField("e.g. +14155559999, spam@example.com", text: $blacklistText)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 280)
-                }
+                .padding(.top, 4)
+            } label: {
+                Text("Advanced — sender filter")
+                    .font(.callout.weight(.semibold))
             }
         }
     }
@@ -554,8 +579,9 @@ struct SettingsView: View {
         }
     }
 
-    /// Split comma / newline / whitespace separated handles into a
-    /// clean array. Empty entries are dropped.
+    /// Split newline or comma separated handles into a clean array.
+    /// Empty entries are dropped. One handle per line is the primary
+    /// input style, but commas still work for copy-paste.
     private static func parseHandles(_ raw: String) -> [String] {
         raw
             .components(separatedBy: CharacterSet(charactersIn: ",\n"))
