@@ -176,6 +176,7 @@ actor ImsgClient {
             Task.detached(priority: .utility) {
                 try? await Self.archiveToDisk(
                     rowID: message.rowID,
+                    recipient: message.destinationCallerID,
                     jsonData: jsonData,
                     text: Self.friendlyMessageText(message.text),
                     attachmentSources: attachmentSources,
@@ -221,19 +222,43 @@ actor ImsgClient {
 
     // MARK: - Local archive
 
+    /// Filesystem-safe folder name for grouping the archive by the handle
+    /// a message was addressed to (`destination_caller_id`).
+    ///   • Emails: lowercased, `@` and `.` replaced with `_`.
+    ///   • Phone numbers: digits only (drops `+`, spaces, punctuation).
+    ///   • Missing / empty: `unknown`.
+    static func archiveFolderName(forRecipient raw: String?) -> String {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "unknown" }
+        if trimmed.contains("@") {
+            var mapped = ""
+            for ch in trimmed.lowercased() {
+                mapped.append(ch == "@" || ch == "." ? "_" : ch)
+            }
+            return mapped.isEmpty ? "unknown" : mapped
+        }
+        let digits = trimmed.filter { $0.isNumber }
+        return digits.isEmpty ? "unknown" : digits
+    }
+
     /// Write the message envelope, text, and attachments to disk under
-    /// `<localSavePath>/<rowID>/`. Static + detached so relay latency
-    /// is unaffected.
+    /// `<localSavePath>/<rowID>/` — or, when `archiveGroupByRecipient` is
+    /// on, `<localSavePath>/<recipient>/<rowID>/`. Static + detached so
+    /// relay latency is unaffected.
     private static func archiveToDisk(
         rowID: Int64,
+        recipient: String?,
         jsonData: Data?,
         text: String,
         attachmentSources: [(source: String, dest: String)],
         config: AppConfig
     ) async throws {
         let root = (config.localSavePath as NSString).expandingTildeInPath
-        let folder = URL(fileURLWithPath: root)
-            .appendingPathComponent("\(rowID)", isDirectory: true)
+        var base = URL(fileURLWithPath: root)
+        if config.archiveGroupByRecipient {
+            base.appendPathComponent(archiveFolderName(forRecipient: recipient), isDirectory: true)
+        }
+        let folder = base.appendingPathComponent("\(rowID)", isDirectory: true)
 
         let fm = FileManager.default
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)

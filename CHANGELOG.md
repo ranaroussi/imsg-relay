@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.3] — 2026-06-17
+
+### Added
+
+- **Relay to webhook toggle.** Settings → Outbound → Relay identity →
+  *Relay to webhook* is a master switch for outbound delivery. When off,
+  no events are enqueued for relay at all (messages, boot beacon, tunnel
+  state), so nothing ships off-box and the queue stays empty — ideal for
+  local-only setups that only use the local API / MCP / archive. On by
+  default to preserve existing behavior; the identity + URL fields are
+  disabled while it's off.
+
+- **Group archive by recipient.** Settings → Outbound → Local archive →
+  *Group by recipient* buckets the on-disk archive by the handle a
+  message was addressed to (`destination_caller_id`), so each of your
+  numbers / email addresses gets its own sub-tree:
+  `<path>/<recipient>/<rowID>/`. The recipient is normalized to a
+  filesystem-safe name (phone → digits only, email → lowercased with
+  `@`/`.` replaced by `_`), falling back to `unknown` when the
+  destination handle is absent. Off by default; existing archives keep
+  the flat `<path>/<rowID>/` layout.
+
+---
+
 ## [0.1.2] — 2026-06-10
 
 ### Added

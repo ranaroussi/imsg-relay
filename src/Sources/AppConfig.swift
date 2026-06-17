@@ -30,6 +30,13 @@ struct AppConfig: Codable, Equatable, Sendable {
     /// Remote endpoint that receives relayed events.
     var serverEndpoint: String
 
+    /// Master switch for outbound webhook delivery. When `false`, no
+    /// events are enqueued for relay at all (messages, boot beacon,
+    /// tunnel state) — useful for local-only setups that just want the
+    /// local API / MCP / archive without shipping anything off-box.
+    /// On by default to preserve existing behavior.
+    var relayEnabled: Bool
+
     /// Bearer token used for `Authorization` on outbound relay POSTs
     /// and required on the local HTTP API when set.
     var bearerToken: String
@@ -98,6 +105,15 @@ struct AppConfig: Codable, Equatable, Sendable {
     /// and `attachments/`.
     var localSavePath: String
 
+    /// When true, the archive is bucketed by the handle the message was
+    /// addressed to (`destination_caller_id`), so each of your numbers /
+    /// email addresses gets its own sub-tree:
+    /// `<localSavePath>/<recipient>/<rowID>/`. The recipient is normalized
+    /// to a filesystem-safe name (phone → digits only, email → lowercased
+    /// with `@`/`.` replaced by `_`). Falls back to `unknown` when the
+    /// destination handle is missing.
+    var archiveGroupByRecipient: Bool
+
     // MARK: - Filter
 
     /// If non-empty, only messages whose sender matches one of these
@@ -113,6 +129,7 @@ struct AppConfig: Codable, Equatable, Sendable {
     static let `default` = AppConfig(
         serverIdentifier: "",
         serverEndpoint: "",
+        relayEnabled: true,
         bearerToken: "",
         localAPIPort: 7878,
         mcpPort: 7879,
@@ -126,6 +143,7 @@ struct AppConfig: Codable, Equatable, Sendable {
         attachmentsPublic: false,
         localSaveEnabled: false,
         localSavePath: "",
+        archiveGroupByRecipient: false,
         whitelistHandles: [],
         blacklistHandles: []
     )
@@ -140,6 +158,7 @@ struct AppConfig: Codable, Equatable, Sendable {
         let d = AppConfig.default
         self.serverIdentifier  = (try? c.decode(String.self,     forKey: .serverIdentifier))  ?? d.serverIdentifier
         self.serverEndpoint    = (try? c.decode(String.self,     forKey: .serverEndpoint))    ?? d.serverEndpoint
+        self.relayEnabled      = (try? c.decode(Bool.self,       forKey: .relayEnabled))      ?? d.relayEnabled
         self.bearerToken       = (try? c.decode(String.self,     forKey: .bearerToken))       ?? d.bearerToken
         self.localAPIPort      = (try? c.decode(Int.self,        forKey: .localAPIPort))      ?? d.localAPIPort
         self.mcpPort           = (try? c.decode(Int.self,        forKey: .mcpPort))           ?? d.mcpPort
@@ -153,6 +172,7 @@ struct AppConfig: Codable, Equatable, Sendable {
         self.attachmentsPublic = (try? c.decode(Bool.self,       forKey: .attachmentsPublic)) ?? d.attachmentsPublic
         self.localSaveEnabled  = (try? c.decode(Bool.self,       forKey: .localSaveEnabled))  ?? d.localSaveEnabled
         self.localSavePath     = (try? c.decode(String.self,     forKey: .localSavePath))     ?? d.localSavePath
+        self.archiveGroupByRecipient = (try? c.decode(Bool.self, forKey: .archiveGroupByRecipient)) ?? d.archiveGroupByRecipient
         self.whitelistHandles  = (try? c.decode([String].self,  forKey: .whitelistHandles))  ?? d.whitelistHandles
         self.blacklistHandles  = (try? c.decode([String].self,  forKey: .blacklistHandles))  ?? d.blacklistHandles
     }
@@ -161,6 +181,7 @@ struct AppConfig: Codable, Equatable, Sendable {
     init(
         serverIdentifier: String,
         serverEndpoint: String,
+        relayEnabled: Bool = true,
         bearerToken: String,
         localAPIPort: Int,
         mcpPort: Int,
@@ -174,11 +195,13 @@ struct AppConfig: Codable, Equatable, Sendable {
         attachmentsPublic: Bool = false,
         localSaveEnabled: Bool = false,
         localSavePath: String = "",
+        archiveGroupByRecipient: Bool = false,
         whitelistHandles: [String] = [],
         blacklistHandles: [String] = []
     ) {
         self.serverIdentifier = serverIdentifier
         self.serverEndpoint = serverEndpoint
+        self.relayEnabled = relayEnabled
         self.bearerToken = bearerToken
         self.localAPIPort = localAPIPort
         self.mcpPort = mcpPort
@@ -192,6 +215,7 @@ struct AppConfig: Codable, Equatable, Sendable {
         self.attachmentsPublic = attachmentsPublic
         self.localSaveEnabled = localSaveEnabled
         self.localSavePath = localSavePath
+        self.archiveGroupByRecipient = archiveGroupByRecipient
         self.whitelistHandles = whitelistHandles
         self.blacklistHandles = blacklistHandles
     }

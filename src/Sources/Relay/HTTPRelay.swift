@@ -36,6 +36,9 @@ actor HTTPRelay {
     /// config + tunnel URL, persist it, and let the loop drain.
     nonisolated func relay(type: EventType, payload: AnyCodable) {
         let config = AppConfigStore.shared.current
+        // Local-only mode: drop the event before it ever hits the queue,
+        // so nothing accumulates while webhook delivery is disabled.
+        guard config.relayEnabled else { return }
         let server = EventEnvelope.Server(
             identifier: config.serverIdentifier,
             endpoint: config.serverEndpoint,
@@ -58,7 +61,7 @@ actor HTTPRelay {
             // of running idle. Now they stay queued and drain the moment
             // the user fills in an endpoint.
             let config = AppConfigStore.shared.current
-            if config.serverEndpoint.isEmpty {
+            if !config.relayEnabled || config.serverEndpoint.isEmpty {
                 try? await Task.sleep(nanoseconds: 3_000_000_000) // 3s
                 continue
             }

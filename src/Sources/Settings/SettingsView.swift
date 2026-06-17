@@ -44,6 +44,13 @@ struct SettingsView: View {
     private var outboundTab: some View {
         tabScroll {
             section("Relay identity") {
+                row("Relay to webhook",
+                    help: "When off, no events are sent to any remote endpoint — useful for local-only setups (local API / MCP / archive only). On by default.") {
+                    Toggle("", isOn: $config.relayEnabled)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                }
+                rowDivider
                 row("Identifier",
                     help: "Sent as server.identifier on every event.") {
                     TextField("e.g. sales, support, personal", text: $config.serverIdentifier)
@@ -57,6 +64,8 @@ struct SettingsView: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 280)
                 }
+                .disabled(!config.relayEnabled)
+                .opacity(config.relayEnabled ? 1 : 0.5)
             }
 
             section("Stream") {
@@ -122,6 +131,13 @@ struct SettingsView: View {
                         }
                         .padding(.horizontal, 12)
                         .padding(.bottom, 8)
+                    }
+                    rowDivider
+                    row("Group by recipient",
+                        help: "Bucket the archive by the handle a message was addressed to (destination_caller_id), so each of your numbers / emails gets its own sub-tree: <path>/<recipient>/<id>/. Recipient is normalized (phone → digits, email → lowercased with _).") {
+                        Toggle("", isOn: $config.archiveGroupByRecipient)
+                            .toggleStyle(.switch)
+                            .labelsHidden()
                     }
                 }
             }

@@ -570,6 +570,7 @@ Click the menu bar icon → **Settings…** and fill in:
 
 | Tab | Field | Default | Purpose |
 |-----|-------|---------|---------|
+| Outbound | **Relay to webhook** | on | Master switch for outbound webhook delivery. When off, no events are enqueued or sent to any remote endpoint — useful for local-only setups that just want the local API / MCP / archive. The identity + URL fields are disabled while off. |
 | Outbound | **Identifier** | `relay` | Stable string sent as `server.identifier` on every event. Example: `sales`, `support`, `personal`. |
 | Outbound | **Webhook URL** | (empty) | HTTPS endpoint that receives relayed events. Events queue up while empty — they drain the moment you save a URL. |
 | Outbound | **Include reactions (tapbacks)** | on | When off, reactions are dropped at the watcher and never enter the queue. |
@@ -577,6 +578,7 @@ Click the menu bar icon → **Settings…** and fill in:
 | Outbound | **Max retry attempts** | `12` | Each attempt waits `min(60, 2^n) + jitter` seconds. After this many failures an event is parked as `dead`. |
 | Outbound | **Save messages locally** | off | Mirrors every inbound message to disk under the path below, in addition to relaying over HTTP. |
 | Outbound | **Archive path** | (empty) | Root folder for the local archive. Each message gets `<path>/<rowID>/message.json`, `MESSAGE.txt`, and `attachments/`. Pick button opens NSOpenPanel. |
+| Outbound | **Group by recipient** | off | When on, buckets the archive by the handle the message was addressed to (`destination_caller_id`): `<path>/<recipient>/<rowID>/`. Recipient is normalized to a filesystem-safe name (phone → digits only, email → lowercased with `@`/`.` replaced by `_`); falls back to `unknown` when the destination handle is missing. |
 | Outbound → Advanced | **Only from these handles** | (empty) | Whitelist: if non-empty, only these senders are processed. One per line, phone numbers normalized to digits, emails lowercased. |
 | Outbound → Advanced | **Never from these handles** | (empty) | Blacklist: messages from these senders are silently dropped. Ignored when whitelist is non-empty. |
 | Inbound | **Bearer token** | (empty) | Sent as `Authorization: Bearer <token>` on outbound webhook POSTs *and* required on incoming local API / MCP / attachment calls. One secret, both directions. Leave blank for dev. |
