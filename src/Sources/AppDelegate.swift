@@ -1,7 +1,6 @@
 import Cocoa
 import SwiftUI
 import Sparkle
-import MCP
 import Contacts
 
 @MainActor
@@ -15,9 +14,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var relay: HTTPRelay?
     private var imsg: ImsgClient?
     private var api: LocalAPIServer?
-    private var mcp: MCPService?
-    private var mcpTransport: StatelessHTTPServerTransport?
-    private var mcpTask: Task<Void, Error>?
     private var contacts: ContactsResolver?
 
     private var updater: SPUStandardUpdaterController?
@@ -88,10 +84,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await relay?.stop() }
         api?.stop()
         tunnel?.stop()
-        mcpTask?.cancel()
-        if let mcpTransport {
-            Task { await mcpTransport.disconnect() }
-        }
     }
 
     // MARK: Runtime
@@ -146,28 +138,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 object: nil
             )
 
-            // HTTP MCP: a `StatelessHTTPServerTransport` from the SDK
-            // gets bound to the SDK's `Server`, and the same transport
-            // is handed to `LocalAPIServer` which routes `POST /mcp`
-            // through it. OriginValidator is disabled because tunnel
-            // traffic arrives from arbitrary external clients; the
-            // bearer auth middleware on LocalAPIServer is the gate.
-            let mcpTransport = StatelessHTTPServerTransport(
-                validationPipeline: StandardValidationPipeline(validators: [
-                    OriginValidator.disabled,
-                    AcceptHeaderValidator(mode: .jsonOnly),
-                    ContentTypeValidator(),
-                    ProtocolVersionValidator(),
-                ])
-            )
-            let mcp = MCPService(imsg: imsg, transport: mcpTransport)
-
             let api = LocalAPIServer(
                 port: AppConfigStore.shared.current.localAPIPort,
                 imsg: imsg,
                 tunnel: tunnel,
-                queue: queue,
-                mcpTransport: mcpTransport
+                queue: queue
             )
 
             self.queue = queue
@@ -175,12 +150,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.relay = relay
             self.imsg = imsg
             self.api = api
-            self.mcp = mcp
-            self.mcpTransport = mcpTransport
 
             Task { await relay.start() }
             Task { await imsg.startWatching() }
-            mcpTask = Task { try await mcp.run() }
             api.start()
             relay.relay(type: .relayStarted, payload: AnyCodable([:] as [String: Any]))
 
@@ -302,18 +274,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Load the bundled menu bar glyph and mark it as a template so macOS
     /// inverts it automatically for light/dark menu bars. We grab the @2x
-    /// asset explicitly because `NSImage(named:)` against `Bundle.module`
-    /// is unreliable for unscaled PNGs — looking up a single file and
-    /// stamping the desired point size on it is more predictable.
+    /// asset explicitly because `NSImage(named:)` is unreliable for
+    /// unscaled PNGs. The app bundler copies these assets directly into
+    /// `Contents/Resources`, so they must be loaded through `Bundle.main`.
+    /// SwiftPM's generated `Bundle.module` accessor targets CLI layouts and
+    /// traps when the resource bundle lives in a correctly signed macOS app.
     private static func menuBarImage() -> NSImage {
-        let bundle = Bundle.module
-        // `.copy("Resources")` in Package.swift preserves the directory
-        // structure inside the resource bundle, so we look under the
-        // "Resources" subdirectory rather than the bundle root.
+        let bundle = Bundle.main
         let candidates = ["MenuBarIcon@2x", "MenuBarIcon@3x", "MenuBarIcon"]
         for name in candidates {
-            let url = bundle.url(forResource: name, withExtension: "png", subdirectory: "Resources")
-                ?? bundle.url(forResource: name, withExtension: "png")
+            let url = bundle.url(forResource: name, withExtension: "png")
             if let url, let image = NSImage(contentsOf: url) {
                 image.size = NSSize(width: 18, height: 18)
                 image.isTemplate = true

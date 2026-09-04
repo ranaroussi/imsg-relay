@@ -72,7 +72,7 @@ Swift 6 strict concurrency throughout — `swiftSettings:
 
 | Isolation | Owners |
 |-----------|--------|
-| `@MainActor` | `AppDelegate`, `MCPService`, `TunnelStatus`, all SwiftUI |
+| `@MainActor` | `AppDelegate`, `TunnelStatus`, all SwiftUI |
 | `actor` | `ImsgClient`, `HTTPRelay`, `StatelessHTTPServerTransport` (from SDK), `StdioTransport` (from SDK) |
 | `final class @unchecked Sendable` | `LocalAPIServer` (HBR captures it across the detached server task; we audit by convention), `RelayQueue` (internal `DispatchQueue` for SQLite serialization) |
 | `final class` (no isolation, `nonisolated(unsafe)` weak refs) | `TunnelManager` (process supervisor — touched from a child reader task and from the main UI), commented `nonisolated(unsafe)` for the surface that's read concurrently |
@@ -80,7 +80,7 @@ Swift 6 strict concurrency throughout — `swiftSettings:
 | `Sendable` | `EventEnvelope`, `AppConfig`, all transferred values |
 
 The pattern is: **I/O surfaces are actors, UI is `@MainActor`, the
-connecting glue is `@MainActor` (`AppDelegate`) and explicit `Task`s
+connecting glue starts at `@MainActor` (`AppDelegate`) and explicit `Task`s
 shuttle data between them.**
 
 ---
@@ -113,14 +113,10 @@ AppDelegate.applicationDidFinishLaunching
         ├── ImsgClient(queue:, relay:) — opens chat.db read-only via IMsgCore
         ├── tunnel.attach(relay:)     # so tunnel lifecycle events get enqueued
         │
-        ├── StatelessHTTPServerTransport(validationPipeline: ...)
-        ├── MCPService(imsg:, transport: <http transport>)
-        │
-        ├── LocalAPIServer(port:, imsg:, tunnel:, queue:, mcpTransport: <http transport>)
+        ├── LocalAPIServer(port:, imsg:, tunnel:, queue:)
         │
         ├── Task { await relay.start() }           # background event drainer
         ├── Task { await imsg.startWatching() }    # background chat.db watcher
-        ├── mcpTask = Task { try await mcp.run() } # SDK Server bound to HTTP transport
         ├── api.start()                            # Hummingbird detached task
         ├── relay.relay(type: .relayStarted, ...)  # boot beacon
         │
@@ -331,7 +327,7 @@ func run() async throws {
 }
 ```
 
-The seven tools are registered once via
+The seven-tool catalog is defined once. Each SDK server registers it via
 `server.withMethodHandler(CallTool.self) { params in ... }` and the
 dispatch switch keys on `params.name`.
 
@@ -353,10 +349,7 @@ until the Task completes.
 ```
 AppDelegate.bootRuntime
    ↓
-   ├── mcpTransport = StatelessHTTPServerTransport(validationPipeline: ...)
-   ├── mcp = MCPService(imsg:, transport: mcpTransport)
-   ├── api = LocalAPIServer(... mcpTransport: mcpTransport)
-   ├── mcpTask = Task { try await mcp.run() }   # SDK Server bound
+   ├── api = LocalAPIServer(...)
    └── api.start()                              # Hummingbird routes alive
 ```
 
@@ -368,10 +361,12 @@ Hummingbird Request
    ▼  LocalAPIServer.makeMCPRequest(req:, body:)
 MCP.HTTPRequest { method, headers, body, path }
    │
-   ▼
-mcpTransport.handleRequest(_:)              [StatelessHTTPServerTransport]
+   ▼  MCPService.handleStatelessHTTPRequest(_:imsg:)
+Create a fresh SDK Server and StatelessHTTPServerTransport
    │
-   ├── runs validation pipeline (Accept header, Content-Type, MCP-Protocol-Version)
+   ├── register the shared tool catalog
+   ├── start the fresh Server on the fresh transport
+   ├── run validation pipeline (Accept header, Content-Type, MCP-Protocol-Version)
    ├── classifies JSON-RPC message kind (request / notification / response)
    │
    ├── notification → yield to SDK Server stream → return 202 Accepted
@@ -387,6 +382,8 @@ mcpTransport.handleRequest(_:)              [StatelessHTTPServerTransport]
          ▼
          ├── matches responseData's id against pending continuations
          └── resumes the awaiting handleRequest call with the response bytes
+   │
+   ├── stop the request-scoped Server and transport
    │
    ▼
 MCP.HTTPResponse (.data, .accepted, .error, etc.)
@@ -406,6 +403,9 @@ The SDK ships both `StatelessHTTPServerTransport` and
    (e.g. shell scripts with `curl`).
 3. **Bearer auth handles identity** — we don't need MCP sessions
    for access control.
+4. **Request-scoped protocol state** — the SDK `Server` tracks whether it
+   has already initialized. A fresh server per HTTP request prevents one
+   client from making later clients fail with `Server is already initialized`.
 
 When/if we add resources or prompts that benefit from streaming, the
 stateful variant slots in by swapping the transport. Tools don't change.

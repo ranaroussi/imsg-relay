@@ -2,10 +2,9 @@ import Foundation
 import MCP
 
 /// MCP service backed by `ImsgClient`. Same tool surface regardless of
-/// transport — the menu bar app boots one of these on a
-/// `StatelessHTTPServerTransport` (reachable via the Cloudflare Tunnel),
-/// and `ImsgRelay --mcp` boots a second instance on a `StdioTransport`
-/// for local Claude Desktop integration.
+/// transport. `ImsgRelay --mcp` keeps one instance alive on stdio. HTTP
+/// requests use `handleStatelessHTTPRequest`, which creates an isolated
+/// server and transport for every request.
 ///
 /// The MCP server identifier stays as the kebab-case "imsg-relay"
 /// because that's a machine-readable name baked into client configs.
@@ -13,7 +12,6 @@ import MCP
 /// Stdio and HTTP modes run as two distinct process modes on the same
 /// binary — keeping the menu bar app off stdio avoids fighting macOS
 /// for stdin/stdout while the GUI is up.
-@MainActor
 final class MCPService {
     private let imsg: ImsgClient
     private let server: Server
@@ -30,9 +28,51 @@ final class MCPService {
     }
 
     func run() async throws {
+        try await start()
+        await server.waitUntilCompleted()
+    }
+
+    /// Process one request with completely isolated protocol state.
+    ///
+    /// A `StatelessHTTPServerTransport` does not isolate the SDK `Server`
+    /// attached to it. Reusing one Server therefore makes the second client
+    /// fail its initialize request with "Server is already initialized".
+    /// Creating both objects per request also permits concurrent clients.
+    static func handleStatelessHTTPRequest(
+        _ request: MCP.HTTPRequest,
+        imsg: ImsgClient
+    ) async -> MCP.HTTPResponse {
+        let transport = StatelessHTTPServerTransport(
+            validationPipeline: StandardValidationPipeline(validators: [
+                OriginValidator.disabled,
+                AcceptHeaderValidator(mode: .jsonOnly),
+                ContentTypeValidator(),
+                ProtocolVersionValidator(),
+            ])
+        )
+        let service = MCPService(imsg: imsg, transport: transport)
+
+        do {
+            try await service.start()
+            let response = await transport.handleRequest(request)
+            await service.stop()
+            return response
+        } catch {
+            await service.stop()
+            return .error(
+                statusCode: 500,
+                .internalError("Failed to process MCP request: \(error.localizedDescription)")
+            )
+        }
+    }
+
+    private func start() async throws {
         await registerTools()
         try await server.start(transport: transport)
-        await server.waitUntilCompleted()
+    }
+
+    private func stop() async {
+        await server.stop()
     }
 
     // MARK: - Tools
@@ -50,7 +90,7 @@ final class MCPService {
                 case "imsg_list_chats":
                     let limit = Self.intArg(params, "limit", default: 50)
                     let body = try await imsg.listChatsJSON(limit: limit)
-                    return .init(content: [.text(Self.utf8(body))], isError: false)
+                    return .init(content: [.text(text: Self.utf8(body), annotations: nil, _meta: nil)], isError: false)
 
                 case "imsg_get_chat":
                     guard let id = Self.intArg(params, "chat_id") else {
@@ -59,7 +99,7 @@ final class MCPService {
                     guard let body = try await imsg.chatInfoJSON(id: Int64(id)) else {
                         return Self.err("chat not found")
                     }
-                    return .init(content: [.text(Self.utf8(body))], isError: false)
+                    return .init(content: [.text(text: Self.utf8(body), annotations: nil, _meta: nil)], isError: false)
 
                 case "imsg_get_history":
                     guard let id = Self.intArg(params, "chat_id") else {
@@ -67,7 +107,7 @@ final class MCPService {
                     }
                     let limit = Self.intArg(params, "limit", default: 50)
                     let body = try await imsg.historyJSON(chatID: Int64(id), limit: limit)
-                    return .init(content: [.text(Self.utf8(body))], isError: false)
+                    return .init(content: [.text(text: Self.utf8(body), annotations: nil, _meta: nil)], isError: false)
 
                 case "imsg_search_messages":
                     guard let query = Self.stringArg(params, "query") else {
@@ -76,7 +116,7 @@ final class MCPService {
                     let match = Self.stringArg(params, "match") ?? "contains"
                     let limit = Self.intArg(params, "limit", default: 50)
                     let body = try await imsg.searchJSON(query: query, match: match, limit: limit)
-                    return .init(content: [.text(Self.utf8(body))], isError: false)
+                    return .init(content: [.text(text: Self.utf8(body), annotations: nil, _meta: nil)], isError: false)
 
                 case "imsg_send_message":
                     guard let to = Self.stringArg(params, "to"),
@@ -86,7 +126,7 @@ final class MCPService {
                     let service = Self.stringArg(params, "service") ?? "auto"
                     let chatID = Self.intArg(params, "chat_id").map(Int64.init)
                     try await imsg.send(to: to, text: text, chatID: chatID, service: service)
-                    return .init(content: [.text("{\"queued\":true}")], isError: false)
+                    return .init(content: [.text(text: "{\"queued\":true}", annotations: nil, _meta: nil)], isError: false)
 
                 case "imsg_send_attachment":
                     guard let to = Self.stringArg(params, "to") else {
@@ -118,17 +158,21 @@ final class MCPService {
                     defer { if let p = stagedPath { try? FileManager.default.removeItem(atPath: p) } }
 
                     try await imsg.send(to: to, text: text, attachmentPath: finalPath, chatID: chatID)
-                    return .init(content: [.text("{\"queued\":true}")], isError: false)
+                    return .init(content: [.text(text: "{\"queued\":true}", annotations: nil, _meta: nil)], isError: false)
 
                 case "imsg_get_status":
                     let config = AppConfigStore.shared.current
                     let payload: [String: Any] = [
+                        "mcp_connected": true,
+                        "database_access": Permissions.hasFullDiskAccess(),
+                        "local_api_port": config.localAPIPort,
+                        "outbound_relay_enabled": config.relayEnabled,
                         "identifier": config.serverIdentifier,
                         "endpoint": config.serverEndpoint,
                         "tunnel_enabled": config.tunnelEnabled
                     ]
                     let json = try JSONSerialization.data(withJSONObject: payload)
-                    return .init(content: [.text(Self.utf8(json))], isError: false)
+                    return .init(content: [.text(text: Self.utf8(json), annotations: nil, _meta: nil)], isError: false)
 
                 default:
                     return Self.err("unknown tool: \(params.name)")
@@ -141,6 +185,24 @@ final class MCPService {
 
     // MARK: - Tool catalog
 
+    /// Explicit annotations keep read-only queries usable when Codex runs
+    /// with a noninteractive approval policy. MCP defaults unannotated tools
+    /// to mutating and potentially destructive, which incorrectly approval-
+    /// gates status and history reads.
+    nonisolated private static let messageQueryAnnotations = Tool.Annotations(
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+    )
+
+    nonisolated private static let messageSendAnnotations = Tool.Annotations(
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true
+    )
+
     nonisolated private static let toolDefinitions: [Tool] = [
         Tool(
             name: "imsg_list_chats",
@@ -150,7 +212,8 @@ final class MCPService {
                 "properties": .object([
                     "limit": .object(["type": .string("integer"), "description": .string("Max chats to return (default 50)")])
                 ])
-            ])
+            ]),
+            annotations: messageQueryAnnotations
         ),
         Tool(
             name: "imsg_get_chat",
@@ -161,7 +224,8 @@ final class MCPService {
                     "chat_id": .object(["type": .string("integer")])
                 ]),
                 "required": .array([.string("chat_id")])
-            ])
+            ]),
+            annotations: messageQueryAnnotations
         ),
         Tool(
             name: "imsg_get_history",
@@ -173,7 +237,8 @@ final class MCPService {
                     "limit": .object(["type": .string("integer")])
                 ]),
                 "required": .array([.string("chat_id")])
-            ])
+            ]),
+            annotations: messageQueryAnnotations
         ),
         Tool(
             name: "imsg_search_messages",
@@ -186,7 +251,8 @@ final class MCPService {
                     "limit": .object(["type": .string("integer")])
                 ]),
                 "required": .array([.string("query")])
-            ])
+            ]),
+            annotations: messageQueryAnnotations
         ),
         Tool(
             name: "imsg_send_message",
@@ -200,7 +266,8 @@ final class MCPService {
                     "service": .object(["type": .string("string"), "description": .string("auto | imessage | sms")])
                 ]),
                 "required": .array([.string("to"), .string("text")])
-            ])
+            ]),
+            annotations: messageSendAnnotations
         ),
         Tool(
             name: "imsg_send_attachment",
@@ -220,15 +287,17 @@ final class MCPService {
                     "attachment_path": .object(["type": .string("string"), "description": .string("Absolute path on the host Mac (stdio MCP only)")])
                 ]),
                 "required": .array([.string("to")])
-            ])
+            ]),
+            annotations: messageSendAnnotations
         ),
         Tool(
             name: "imsg_get_status",
-            description: "Report relay configuration (identifier, endpoint, tunnel state).",
+            description: "Report MCP connectivity and database access separately from optional outbound relay and tunnel state.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([:])
-            ])
+            ]),
+            annotations: messageQueryAnnotations
         )
     ]
 
@@ -267,6 +336,6 @@ final class MCPService {
     }
 
     nonisolated private static func err(_ message: String) -> CallTool.Result {
-        .init(content: [.text(text: message)], isError: true)
+        .init(content: [.text(text: message, annotations: nil, _meta: nil)], isError: true)
     }
 }
