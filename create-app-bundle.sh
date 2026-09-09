@@ -80,6 +80,48 @@ RELAY_RESOURCE_BUNDLE="$APP_DIR/Contents/Resources/${EXECUTABLE_NAME}_${EXECUTAB
 PHONE_NUMBER_RESOURCE_BUNDLE="$APP_DIR/Contents/Resources/PhoneNumberKit_PhoneNumberKit.bundle"
 [ -d "$PHONE_NUMBER_RESOURCE_BUNDLE" ] || die "PhoneNumberKit resource bundle missing: $PHONE_NUMBER_RESOURCE_BUNDLE"
 
+# Every release up to 0.1.3 launched fine on the build machine and died
+# instantly everywhere else. SwiftPM's generated `Bundle.module` accessor
+# probes `<app>.app/ImsgRelay_ImsgRelay.bundle` — a path this bundler never
+# writes — then falls back to an absolute path inside the build machine's
+# checkout, and calls `fatalError` when neither resolves. Because the icon
+# loader ran before anything drew UI and LSUIElement suppresses the crash
+# dialog, the app just silently failed to open. Guard the invariant instead
+# of the symptom: our code must resolve resources through `Bundle.main`.
+log "Verifying bundle is self-contained"
+
+RELAY_MODULE_USES="$(grep -rn 'Bundle\.module' "$SRC_DIR/Sources" --include='*.swift' \
+    | sed 's/^[^:]*:[0-9]*://' \
+    | sed 's/^[[:space:]]*//' \
+    | grep -v '^//' || true)"
+if [ -n "$RELAY_MODULE_USES" ]; then
+    die "Bundle.module used in Sources — reintroduces the silent launch crash, use Bundle.main: $RELAY_MODULE_USES"
+fi
+
+# Linking that accessor is what bakes our own bundle name into the binary, so
+# its absence is the post-build proof the app no longer depends on a path we
+# do not ship.
+if strings "$APP_DIR/Contents/MacOS/$EXECUTABLE_NAME" \
+    | grep -q "${EXECUTABLE_NAME}_${EXECUTABLE_NAME}.bundle"; then
+    die "Binary references ${EXECUTABLE_NAME}_${EXECUTABLE_NAME}.bundle — the Bundle.module accessor was linked in"
+fi
+
+# The exact file menuBarImage() now loads through Bundle.main.
+MENU_BAR_ICON="$APP_DIR/Contents/Resources/MenuBarIcon@2x.png"
+[ -f "$MENU_BAR_ICON" ] || die "Menu bar icon missing: $MENU_BAR_ICON"
+
+# Dependencies keep their own generated accessors. PhoneNumberKit's patched
+# resolver checks Bundle.main.resourceURL first, so its dev path survives only
+# as an unreachable fallback — reported rather than fatal, so a genuinely
+# reachable one cannot hide in the noise.
+EMBEDDED_DEV_PATHS="$(strings "$APP_DIR/Contents/MacOS/$EXECUTABLE_NAME" \
+    | grep -o "/Users/[^\"' ]*\.bundle" | sort -u || true)"
+if [ -n "$EMBEDDED_DEV_PATHS" ]; then
+    warn "Dependency fallback paths embedded (unreachable in a packaged app):"
+    printf '%s\n' "$EMBEDDED_DEV_PATHS" | sed 's/^/      /'
+fi
+ok "Self-contained: no build-machine paths reachable, menu bar icon present"
+
 log "Bundling cloudflared ($CLOUDFLARED_ARCH)"
 CFD_OUT="$APP_DIR/Contents/Resources/cloudflared"
 if [ -f "$SRC_DIR/Sources/Resources/cloudflared" ]; then

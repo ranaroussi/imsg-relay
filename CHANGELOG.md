@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.4] — 2026-09-09
+
+Hotfix release. Both fixes were diagnosed and contributed by
+[@gintasz](https://github.com/gintasz) in
+[#1](https://github.com/ranaroussi/imsg-relay/pull/1).
+
+### Fixed
+
+- **The app failed to launch on every Mac except the one that built it.**
+  Releases 0.1.0 through 0.1.3 are affected: Gatekeeper's "downloaded from
+  the internet" prompt appeared, and clicking *Open* did nothing at all —
+  no window, no menu bar icon, no crash dialog. The menu bar icon was
+  loaded through SwiftPM's generated `Bundle.module` accessor, which probes
+  `iMessage Relay.app/ImsgRelay_ImsgRelay.bundle` — a path the bundler
+  never writes, since resource bundles belong in `Contents/Resources` — and
+  then falls back to an absolute path inside the build machine's checkout,
+  calling `fatalError` when neither resolves. Only the machine that
+  produced the binary had that second path, so every download trapped
+  during icon loading, before any UI was drawn, and `LSUIElement` meant
+  there was no window or dock icon to hint that anything had happened.
+  Icons now resolve through `Bundle.main` against `Contents/Resources`.
+  **Anyone on an earlier release has to download 0.1.4 manually —
+  auto-update cannot rescue them, because Sparkle never got far enough to
+  initialize.**
+
+- **Only the first MCP client could connect.** `POST /mcp` shared one
+  long-lived `Server` instance across requests, so the second and every
+  later client was rejected with `-32600: Server is already initialized`,
+  and stateless clients that reconnect per request (Codex among them)
+  could never complete discovery. Each request now builds its own `Server`
+  and `StatelessHTTPServerTransport`, which is what the stateless
+  transport's contract expects, so multiple agents can share the endpoint.
+
+- **Deprecated MCP SDK content calls** (`text(_:metadata:)`) replaced with
+  their current equivalents, clearing the build warnings they produced.
+
+### Added
+
+- **MCP tool annotations** — read-only, destructive, idempotent and
+  open-world hints on every exposed tool, so clients can reason about
+  which calls are safe to retry or run unattended.
+
+- **Richer `imsg_get_status`**, now reporting `mcp_connected`,
+  `database_access`, `local_api_port` and `outbound_relay_enabled`.
+
+- **Build-time self-containment guard.** `create-app-bundle.sh` fails the
+  build if any source file resolves resources through `Bundle.module`, if
+  the binary still links that accessor, or if the menu bar icon is missing
+  from `Contents/Resources`, and reports any build-machine paths embedded
+  by dependencies. The crash above shipped four times because it was
+  invisible on the machine that produced it; this makes it a build error
+  instead.
+
+### Changed
+
+- `MCPService` is no longer `@MainActor` — requests now originate from
+  Hummingbird's request handler rather than the main thread — and MCP boot
+  and shutdown were removed from `AppDelegate`, since each request owns
+  its own server lifecycle. `LocalAPIServer.init` no longer takes an
+  `mcpTransport`.
+
+---
+
 ## [0.1.3] — 2026-06-17
 
 ### Added
