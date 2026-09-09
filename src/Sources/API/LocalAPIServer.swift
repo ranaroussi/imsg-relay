@@ -24,28 +24,24 @@ final class LocalAPIServer: @unchecked Sendable {
     private weak var imsg: ImsgClient?
     private weak var tunnel: TunnelManager?
     private weak var queue: RelayQueue?
-    private let mcpTransport: StatelessHTTPServerTransport?
     private var task: Task<Void, Error>?
 
     init(
         port: Int,
         imsg: ImsgClient,
         tunnel: TunnelManager,
-        queue: RelayQueue,
-        mcpTransport: StatelessHTTPServerTransport? = nil
+        queue: RelayQueue
     ) {
         self.port = port
         self.imsg = imsg
         self.tunnel = tunnel
         self.queue = queue
-        self.mcpTransport = mcpTransport
     }
 
     func start() {
         let imsg = self.imsg
         let tunnel = self.tunnel
         let queue = self.queue
-        let mcpTransport = self.mcpTransport
         let port = self.port
 
         task = Task.detached {
@@ -186,19 +182,16 @@ final class LocalAPIServer: @unchecked Sendable {
                 ])
             }
 
-            // MCP over HTTP. The Hummingbird request gets adapted into
-            // the SDK's framework-agnostic `MCP.HTTPRequest`, handed to
-            // `StatelessHTTPServerTransport`, and the resulting
-            // `MCP.HTTPResponse` is adapted back. The transport bridges
-            // into the SDK `Server` boot from `AppDelegate`, so the
-            // same tools that work over stdio are reachable here.
+            // MCP over HTTP. Every request gets an isolated SDK Server and
+            // StatelessHTTPServerTransport. Sharing an SDK Server would leak
+            // initialization state between independent HTTP clients.
             router.post("/mcp") { req, _ -> Response in
-                guard let transport = mcpTransport else {
+                guard let imsg else {
                     throw HTTPError(.serviceUnavailable)
                 }
                 let body = try await req.body.collect(upTo: 1_048_576)
                 let mcpRequest = Self.makeMCPRequest(req: req, body: Data(buffer: body))
-                let mcpResponse = await transport.handleRequest(mcpRequest)
+                let mcpResponse = await MCPService.handleStatelessHTTPRequest(mcpRequest, imsg: imsg)
                 return Self.makeHummingbirdResponse(from: mcpResponse)
             }
 

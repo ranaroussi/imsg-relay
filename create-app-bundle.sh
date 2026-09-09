@@ -34,6 +34,12 @@ esac
 
 BUILD_DIR="$SRC_DIR/.build/release"
 
+log "Resolving and patching Swift dependencies"
+(cd "$SRC_DIR" && swift package resolve)
+IMSG_DEPENDENCY_PATCH="$SRC_DIR/.build/checkouts/imsg/scripts/patch-deps.sh"
+[ -f "$IMSG_DEPENDENCY_PATCH" ] || die "IMsgCore dependency patch missing: $IMSG_DEPENDENCY_PATCH"
+(cd "$SRC_DIR" && bash ".build/checkouts/imsg/scripts/patch-deps.sh")
+
 log "Building Swift executable (release, $SWIFT_ARCH)"
 (cd "$SRC_DIR" && swift build -c release --arch "$SWIFT_ARCH")
 [ -f "$BUILD_DIR/$EXECUTABLE_NAME" ] || die "Build output missing: $BUILD_DIR/$EXECUTABLE_NAME"
@@ -61,12 +67,18 @@ if [ -d "$SRC_DIR/Sources/Resources" ]; then
     done
 fi
 
-# Some IMsgCore/SwiftPM resource layouts produce an ImsgRelay_ImsgRelay.bundle
-# under .build/release. Copy it alongside the binary so resource lookups work.
+# Package resources belong under Contents/Resources in a signed macOS app.
+# IMsgCore's dependency patch makes PhoneNumberKit search this standard path
+# in release builds instead of falling through to SwiftPM's CLI-only path.
 for bundle in "$BUILD_DIR"/*.bundle; do
     [ -e "$bundle" ] || continue
     cp -R "$bundle" "$APP_DIR/Contents/Resources/"
 done
+
+RELAY_RESOURCE_BUNDLE="$APP_DIR/Contents/Resources/${EXECUTABLE_NAME}_${EXECUTABLE_NAME}.bundle"
+[ -d "$RELAY_RESOURCE_BUNDLE" ] || die "SwiftPM resource bundle missing: $RELAY_RESOURCE_BUNDLE"
+PHONE_NUMBER_RESOURCE_BUNDLE="$APP_DIR/Contents/Resources/PhoneNumberKit_PhoneNumberKit.bundle"
+[ -d "$PHONE_NUMBER_RESOURCE_BUNDLE" ] || die "PhoneNumberKit resource bundle missing: $PHONE_NUMBER_RESOURCE_BUNDLE"
 
 log "Bundling cloudflared ($CLOUDFLARED_ARCH)"
 CFD_OUT="$APP_DIR/Contents/Resources/cloudflared"

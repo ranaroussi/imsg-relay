@@ -334,7 +334,7 @@ Files are staged into `~/Library/Application Support/imsg-relay/outbound/<uuid8>
 
 iMessage Relay speaks MCP over two transports — same tool surface either way. **HTTP is the primary path** (because it works from any AI agent in any datacenter); stdio is preserved for local Claude Desktop.
 
-**HTTP through the tunnel.** The menu bar app boots an MCP server on the official [`modelcontextprotocol/swift-sdk`](https://github.com/modelcontextprotocol/swift-sdk)'s `StatelessHTTPServerTransport` and exposes it at `POST /mcp` — same Hummingbird server that serves the REST API, same bearer-token auth, same tunnel hostname.
+**HTTP through the tunnel.** The menu bar app exposes `POST /mcp` on the same Hummingbird server that serves the REST API, with the same bearer-token auth and tunnel hostname. Each request gets a fresh SDK `Server` and `StatelessHTTPServerTransport`, so independent and concurrent clients cannot share MCP initialization state.
 
 ```bash
 curl -sS -X POST "$TUNNEL_URL/mcp" \
@@ -352,7 +352,7 @@ curl -sS -X POST "$TUNNEL_URL/mcp" \
   }'
 ```
 
-No SSE, no session header to manage — just bearer auth and a JSON body per request.
+No SSE and no session header to manage. Each request needs only bearer auth and a JSON body.
 
 **Stdio for Claude Desktop.** Wire it into `~/Library/Application Support/Claude/claude_desktop_config.json` (a copy-pasteable template lives in [`examples/claude_desktop_config.json`](examples/claude_desktop_config.json)):
 
