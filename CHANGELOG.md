@@ -34,6 +34,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`SIGTERM` left half an app running.** The local API runs on Hummingbird,
+  whose service lifecycle traps `SIGTERM` and gracefully stops the HTTP
+  server — but nothing stopped the AppKit run loop, so `kill` or `pkill`
+  produced a live menu bar app with no listener, and a `cloudflared` child
+  reparented to launchd, still publishing a tunnel aimed at a port the next
+  instance would try to serve. Both `SIGTERM` and `SIGINT` now route through
+  `NSApp.terminate`, which stops the listener and the tunnel on the way out.
+
+- **Leftover `cloudflared` children from a force-quit are now reaped.** A
+  crash or a `kill -9` can't run our cleanup, so the previous run's connector
+  kept a tunnel pointed at a port the next instance was about to bind. Launch
+  sweeps them. The match is an exact executable path inside our own bundle,
+  so a dev build resolving `cloudflared` from Homebrew can never touch tunnels
+  belonging to the user or to another app.
+
 - **Local archive failures were silently discarded.** `archiveToDisk` errors
   were swallowed by `try?`, so an unwritable folder or a full disk looked
   identical to a successful write despite the documentation promising errors

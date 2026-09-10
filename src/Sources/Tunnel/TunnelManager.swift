@@ -241,6 +241,81 @@ final class TunnelManager: @unchecked Sendable {
         }
     }
 
+    // MARK: - Stray process reaping
+
+    /// PIDs of `cloudflared` processes started from `executablePath` that we
+    /// are not currently supervising.
+    ///
+    /// A force-quit or a crash leaves our child reparented to launchd, still
+    /// holding a tunnel pointed at a port a later instance will serve. The
+    /// filter is deliberately narrow — an exact match on the executable path
+    /// we launch, which for a release build is inside our own bundle — so a
+    /// dev build resolving `cloudflared` from Homebrew can never sweep up
+    /// tunnels belonging to other apps or to the user.
+    static func strayPIDs(
+        psOutput: String,
+        executablePath: String,
+        excluding excluded: Set<Int32>
+    ) -> [Int32] {
+        var pids: [Int32] = []
+        for rawLine in psOutput.split(separator: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty else { continue }
+            // Format: "<pid> <command with args…>"
+            guard let spaceIndex = line.firstIndex(of: " ") else { continue }
+            guard let pid = Int32(line[line.startIndex..<spaceIndex]) else { continue }
+            let command = line[line.index(after: spaceIndex)...].trimmingCharacters(in: .whitespaces)
+            guard command == executablePath || command.hasPrefix(executablePath + " ") else { continue }
+            guard !excluded.contains(pid), pid != ProcessInfo.processInfo.processIdentifier else { continue }
+            pids.append(pid)
+        }
+        return pids
+    }
+
+    /// Terminate leftover `cloudflared` children from a previous run.
+    ///
+    /// Only ever runs against a binary inside our own app bundle: if
+    /// `cloudflared` was resolved from Homebrew or the PATH, that same path
+    /// is shared with every other tunnel on the machine, and the user's own
+    /// unrelated tunnels are not ours to kill.
+    func reapStrayProcesses() {
+        guard let execPath = locateCloudflared() else { return }
+        let bundlePath = Self.absolutePath(Bundle.main.bundlePath)
+        guard execPath.hasPrefix(bundlePath + "/") else {
+            Log.tunnel.debug("skipping stray sweep: cloudflared at \(execPath, privacy: .public) is shared, not ours")
+            return
+        }
+
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-axo", "pid=,command="]
+        let pipe = Pipe()
+        ps.standardOutput = pipe
+        ps.standardError = FileHandle.nullDevice
+
+        let output: String
+        do {
+            try ps.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            ps.waitUntilExit()
+            output = String(data: data, encoding: .utf8) ?? ""
+        } catch {
+            Log.tunnel.notice("stray sweep skipped: could not run ps (\(error.localizedDescription, privacy: .public))")
+            return
+        }
+
+        var excluded = Set<Int32>()
+        if let current = process?.processIdentifier { excluded.insert(current) }
+
+        let strays = Self.strayPIDs(psOutput: output, executablePath: execPath, excluding: excluded)
+        guard !strays.isEmpty else { return }
+
+        for pid in strays {
+            Log.tunnel.notice("reaping stray cloudflared PID \(pid) from a previous run")
+            kill(pid, SIGTERM)
+        }
+    }
+
     /// Compose the per-mode `cloudflared` runtime. Returns `nil` when
     /// the user picked `.named` but hasn't yet entered a token + hostname.
     private func buildRuntime(port: Int) -> Runtime? {
@@ -302,6 +377,24 @@ final class TunnelManager: @unchecked Sendable {
         }
         while host.hasSuffix("/") { host.removeLast() }
         return host
+    }
+
+    /// Resolve against the working directory so the path we launch — and
+    /// therefore the one `ps` reports for the child — is always absolute.
+    ///
+    /// Launching the app from a shell by a relative path
+    /// (`./iMessage Relay.app/…`) makes `Bundle.main` relative too, and a
+    /// child recorded as `./iMessage Relay.app/Contents/Resources/cloudflared`
+    /// will not match the absolute path the stray sweep looks for.
+    /// Normalising here fixes the cause instead of teaching the matcher to
+    /// guess.
+    static func absolutePath(_ path: String) -> String {
+        guard !path.hasPrefix("/") else {
+            return URL(fileURLWithPath: path).standardizedFileURL.path
+        }
+        let cwd = FileManager.default.currentDirectoryPath
+        return URL(fileURLWithPath: path, relativeTo: URL(fileURLWithPath: cwd, isDirectory: true))
+            .standardizedFileURL.path
     }
 
     @MainActor

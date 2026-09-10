@@ -631,10 +631,18 @@ killall -9 ImsgRelay
 sqlite3 "$HOME/Library/Application Support/imsg-relay/relay.sqlite3" \
   "SELECT state, COUNT(*) FROM events GROUP BY state"
 
-# 4. Relaunch
+# 4. The cloudflared child outlives a -9 and is reparented to launchd
+ps -eo pid,ppid,command | grep '[i]Message Relay.app/Contents/Resources/cloudflared'
+
+# 5. Relaunch
 open "/Applications/iMessage Relay.app"
-# 5. Queue drains within seconds — no events lost
+# 6. Queue drains within seconds — no events lost, and the orphan above is
+#    gone: launch reaps connectors left behind by a previous run.
+log show --last 2m --predicate 'subsystem == "com.imsg-relay.app"' | grep reaping
 ```
+
+A plain `killall ImsgRelay` (`SIGTERM`) shuts down cleanly instead, taking
+the listener and the tunnel with it — nothing is left to reap.
 
 ---
 

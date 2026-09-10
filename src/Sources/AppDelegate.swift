@@ -42,6 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// us auto-resume without the user having to click Try Again.
     private var permissionPollTimer: Timer?
 
+    /// Held for the process lifetime: a released signal source stops firing.
+    private var signalSources: [DispatchSourceSignal] = []
+
     // MARK: NSApplicationDelegate
 
     func applicationDidFinishLaunching(_ notification: Foundation.Notification) {
@@ -58,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         installMainMenu()
         setupMenuBar()
+        installSignalHandlers()
         bootRuntime()
 
         NotificationCenter.default.addObserver(
@@ -86,6 +90,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tunnel?.stop()
     }
 
+    /// Quit properly on `SIGTERM`/`SIGINT` instead of half-dying.
+    ///
+    /// `LocalAPIServer` runs the Hummingbird app through `runService()`,
+    /// whose service lifecycle traps `SIGTERM` and gracefully stops the HTTP
+    /// server — but nothing stops the AppKit run loop. So a plain
+    /// `pkill ImsgRelay` used to leave a live menu bar app with no listener,
+    /// and a `cloudflared` child reparented to launchd, still holding a
+    /// tunnel aimed at a port the next instance would try to serve. Routing
+    /// the signal through `NSApp.terminate` runs `applicationWillTerminate`,
+    /// which shuts both of those down.
+    ///
+    /// `signal(_:SIG_IGN)` is required: the default disposition would kill
+    /// the process before the dispatch source ever ran.
+    private func installSignalHandlers() {
+        for sig in [SIGTERM, SIGINT] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler {
+                Log.app.notice("received signal \(sig) — terminating cleanly")
+                NSApp.terminate(nil)
+            }
+            source.resume()
+            signalSources.append(source)
+        }
+    }
+
     // MARK: Runtime
 
     private func bootRuntime() {
@@ -106,6 +136,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             let queue = try RelayQueue()
             let tunnel = TunnelManager()
+
+            // A force-quit or a crash can't run our cleanup, so a previous
+            // run's cloudflared may still be up and publishing a tunnel to
+            // this port. Safe here because no child of ours exists yet:
+            // bootRuntime only re-runs while we're still awaiting Full Disk
+            // Access, which is before any tunnel has started.
+            tunnel.reapStrayProcesses()
+
             let relay = HTTPRelay(queue: queue, tunnel: tunnel)
             // Contacts resolver is best-effort: created unconditionally
             // so callers can rely on it being non-nil, but
