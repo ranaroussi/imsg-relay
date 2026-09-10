@@ -6,6 +6,16 @@
         <description>Auto-update feed for iMessage Relay (macOS menu bar app).</description>
         <language>en</language>
         <item>
+            <title>Version 0.2.0</title>
+            <pubDate>Thu, 10 Sep 2026 20:26:04 +0000</pubDate>
+            <link>https://github.com/ranaroussi/imsg-relay/releases/tag/v0.2.0</link>
+            <sparkle:releaseNotesLink>https://github.com/ranaroussi/imsg-relay/releases/tag/v0.2.0</sparkle:releaseNotesLink>
+            <sparkle:version>48</sparkle:version>
+            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/ranaroussi/imsg-relay/releases/download/v0.2.0/imsg-relay-universal.zip" length="59070726" type="application/octet-stream" sparkle:edSignature="j6LBVHAjkGKcSv6bQI9mMZN4mT/vM2o5yamNfBFWf9Ga+gsTzw+KDlJfo14S9fa0eEZE/8gS9q1cWkEieiQ3BQ==" />
+        </item>
+        <item>
             <title>Version 0.1.4</title>
             <pubDate>Wed, 09 Sep 2026 20:07:08 +0000</pubDate>
             <link>https://github.com/ranaroussi/imsg-relay/releases/tag/v0.1.4</link>
