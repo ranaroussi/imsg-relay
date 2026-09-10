@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Run a command after each archived message.** A new **Execute command**
+  field under **Settings → Outbound → Local archive** runs a shell command
+  once a message has been written to disk, with `{{to}}` replaced by the
+  handle the message was addressed to:
+  `python /run/this.py {{to}}` → `python /run/this.py '+447833222222'`.
+  The command runs in that message's archive folder (also `$IMSG_ARCHIVE_DIR`,
+  alongside `$IMSG_TO` and `$IMSG_MESSAGE_ID`), so deciding what to do with
+  the message is the script's job rather than something to configure here.
+
+  `{{to}}` is substituted as a single quoted argument, which makes the command
+  template the only part of the string the shell parses — a handle containing
+  quotes or `;` is an argument, never code. Runs queue one at a time so a
+  backfill or a busy group thread can't spawn a shell per message or have two
+  runs race on the same tree, and a run is killed after 120 seconds
+  (`SIGTERM`, then `SIGKILL`) rather than stalling every message behind it.
+  Empty field means no command; there is no second toggle to disagree with it.
+
+  Only inbound messages trigger it. The archive still mirrors messages you
+  sent, but running a command on those means a script that replies triggers
+  itself on its own reply.
+
+### Fixed
+
+- **Local archive failures were silently discarded.** `archiveToDisk` errors
+  were swallowed by `try?`, so an unwritable folder or a full disk looked
+  identical to a successful write despite the documentation promising errors
+  in Console. They are now logged — and the archive command depends on it,
+  since a script must not be pointed at a directory that was never created.
+
+---
+
 ## [0.1.4] — 2026-09-09
 
 Hotfix release. Both fixes were diagnosed and contributed by

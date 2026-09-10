@@ -139,6 +139,25 @@ struct SettingsView: View {
                             .toggleStyle(.switch)
                             .labelsHidden()
                     }
+                    rowDivider
+                    // Full width on its own line rather than the narrow
+                    // trailing control the other rows use: this value is a
+                    // command line, and 240 points shows about a third of a
+                    // realistic one.
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Execute command")
+                        Text("Runs after an inbound message is archived, in that message's folder, with {{to}} replaced by the handle it was addressed to. $IMSG_TO, $IMSG_ARCHIVE_DIR and $IMSG_MESSAGE_ID are set too. Leave empty for none.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        TextField("python /run/this.py {{to}}", text: $config.archiveCommand)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
                 }
             }
 

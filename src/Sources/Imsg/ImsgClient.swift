@@ -173,14 +173,40 @@ actor ImsgClient {
                 let name = meta.transferName.isEmpty ? meta.filename : meta.transferName
                 return (src, name)
             } ?? []
+            let rowID = message.rowID
+            let recipient = message.destinationCallerID
+            let text = Self.friendlyMessageText(message.text)
+            // The archive still mirrors everything, including messages you
+            // sent — but the command only runs for inbound ones. A command
+            // that fires on your own messages fires on its own replies, which
+            // is a loop with a shell in it.
+            let command = message.isFromMe ? "" : config.archiveCommand
             Task.detached(priority: .utility) {
-                try? await Self.archiveToDisk(
-                    rowID: message.rowID,
-                    recipient: message.destinationCallerID,
-                    jsonData: jsonData,
-                    text: Self.friendlyMessageText(message.text),
-                    attachmentSources: attachmentSources,
-                    config: config
+                // Errors were previously discarded. They can't be now: the
+                // archive command is told which directory to look in, so
+                // running it after a failed write would hand a script a path
+                // that does not exist.
+                let folder: URL
+                do {
+                    folder = try await Self.archiveToDisk(
+                        rowID: rowID,
+                        recipient: recipient,
+                        jsonData: jsonData,
+                        text: text,
+                        attachmentSources: attachmentSources,
+                        config: config
+                    )
+                } catch {
+                    Log.imsg.error(
+                        "archive failed for message \(rowID): \(error.localizedDescription, privacy: .public)"
+                    )
+                    return
+                }
+                await ArchiveCommandQueue.shared.run(
+                    template: command,
+                    recipient: recipient,
+                    rowID: rowID,
+                    folder: folder
                 )
             }
         }
@@ -245,6 +271,10 @@ actor ImsgClient {
     /// `<localSavePath>/<rowID>/` — or, when `archiveGroupByRecipient` is
     /// on, `<localSavePath>/<recipient>/<rowID>/`. Static + detached so
     /// relay latency is unaffected.
+    ///
+    /// Returns the folder it wrote to, which is what the archive command is
+    /// pointed at.
+    @discardableResult
     private static func archiveToDisk(
         rowID: Int64,
         recipient: String?,
@@ -252,7 +282,7 @@ actor ImsgClient {
         text: String,
         attachmentSources: [(source: String, dest: String)],
         config: AppConfig
-    ) async throws {
+    ) async throws -> URL {
         let root = (config.localSavePath as NSString).expandingTildeInPath
         var base = URL(fileURLWithPath: root)
         if config.archiveGroupByRecipient {
@@ -288,6 +318,7 @@ actor ImsgClient {
         }
 
         Log.imsg.info("archived message \(rowID) to \(folder.path, privacy: .public)")
+        return folder
     }
 
     /// Resolve and serialize a message's attachments into JSON-safe

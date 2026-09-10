@@ -114,6 +114,17 @@ struct AppConfig: Codable, Equatable, Sendable {
     /// destination handle is missing.
     var archiveGroupByRecipient: Bool
 
+    /// Shell command run once a message has been archived, with `{{to}}`
+    /// replaced by the handle the message was addressed to. Empty means no
+    /// command — there is no separate on/off toggle, so the field cannot
+    /// disagree with itself.
+    ///
+    /// The command is the only part of this string the shell parses; `{{to}}`
+    /// is substituted as a single quoted argument. It runs after the archive
+    /// files are on disk, and not at all if archiving failed, so the script
+    /// can assume the directory it is being told about exists.
+    var archiveCommand: String
+
     // MARK: - Filter
 
     /// If non-empty, only messages whose sender matches one of these
@@ -144,6 +155,7 @@ struct AppConfig: Codable, Equatable, Sendable {
         localSaveEnabled: false,
         localSavePath: "",
         archiveGroupByRecipient: false,
+        archiveCommand: "",
         whitelistHandles: [],
         blacklistHandles: []
     )
@@ -173,6 +185,7 @@ struct AppConfig: Codable, Equatable, Sendable {
         self.localSaveEnabled  = (try? c.decode(Bool.self,       forKey: .localSaveEnabled))  ?? d.localSaveEnabled
         self.localSavePath     = (try? c.decode(String.self,     forKey: .localSavePath))     ?? d.localSavePath
         self.archiveGroupByRecipient = (try? c.decode(Bool.self, forKey: .archiveGroupByRecipient)) ?? d.archiveGroupByRecipient
+        self.archiveCommand    = (try? c.decode(String.self,     forKey: .archiveCommand))    ?? d.archiveCommand
         self.whitelistHandles  = (try? c.decode([String].self,  forKey: .whitelistHandles))  ?? d.whitelistHandles
         self.blacklistHandles  = (try? c.decode([String].self,  forKey: .blacklistHandles))  ?? d.blacklistHandles
     }
@@ -196,6 +209,7 @@ struct AppConfig: Codable, Equatable, Sendable {
         localSaveEnabled: Bool = false,
         localSavePath: String = "",
         archiveGroupByRecipient: Bool = false,
+        archiveCommand: String = "",
         whitelistHandles: [String] = [],
         blacklistHandles: [String] = []
     ) {
@@ -216,6 +230,7 @@ struct AppConfig: Codable, Equatable, Sendable {
         self.localSaveEnabled = localSaveEnabled
         self.localSavePath = localSavePath
         self.archiveGroupByRecipient = archiveGroupByRecipient
+        self.archiveCommand = archiveCommand
         self.whitelistHandles = whitelistHandles
         self.blacklistHandles = blacklistHandles
     }

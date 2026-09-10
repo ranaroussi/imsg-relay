@@ -49,7 +49,7 @@ Shipped as a native macOS menu bar app, code-signed and notarized, with Sparkle 
 | **Cloudflare Tunnel, two modes** | **Free** `*.trycloudflare.com` for zero-setup demos. **Named** for a stable hostname AI clients can hardcode. The same connector token, supervised by the app, surfaced as `server.callback_url` on every event. | [below](#cloudflare-tunnel-two-modes) |
 | **Contact name resolution** | Optional Contacts integration enriches every inbound event + history response with `sender_name` and `reply_to_sender_name` resolved from your Mac's address book. | [below](#contact-name-resolution) |
 | **Public attachments** | Toggle off bearer-token auth for `GET /attachments/:msg_id/:index` so attachment URLs can be shared or hot-linked directly. Rest of the API stays protected. | [below](#public-attachments) |
-| **Local message archive** | Mirror every inbound message to a folder on disk: `message.json` (full webhook payload), `MESSAGE.txt` (body only), plus `attachments/` with copied files. Independent of the HTTP relay. | [below](#local-message-archive) |
+| **Local message archive** | Mirror every inbound message to a folder on disk: `message.json` (full webhook payload), `MESSAGE.txt` (body only), plus `attachments/` with copied files. Independent of the HTTP relay. Can run a command afterwards to act on it. | [below](#local-message-archive) |
 | **Sender whitelist / blacklist** | Only relay messages from allowed handles, or silently drop spam / unwanted numbers. Normalized for phone numbers (digits only) and emails (lowercased). | [below](#sender-filter) |
 | **Native macOS UX** | Menu bar icon, SwiftUI settings window matching System Settings' grouped form style, friendly Full Disk Access prompt, Sparkle 2 auto-updates. | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | **Signed + notarized releases** | GitHub Actions builds arm64 + x86_64 DMG/ZIP artifacts with Developer ID signing, Apple notarization, EdDSA-signed Sparkle appcast — everything you need to ship to real users. | [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) |
@@ -448,7 +448,37 @@ Toggle **Save messages locally** in **Settings → Outbound → Local archive** 
       photo.png
 ```
 
-The archive runs fire-and-forget: it never blocks the relay, never retries, and logs errors to Console. If the folder is on an external drive that unmounts, the write fails silently and the HTTP relay continues unaffected. The archive is idempotent on restart (same `rowID` overwrites previous files), so backfill + restart is safe.
+The archive runs fire-and-forget: it never blocks the relay, never retries, and logs errors to Console. If the folder is on an external drive that unmounts, the write fails and the HTTP relay continues unaffected. The archive is idempotent on restart (same `rowID` overwrites previous files), so backfill + restart is safe.
+
+#### Run a command after each message
+
+Fill in **Execute command** to have a script run once a message has been archived. `{{to}}` is replaced by the handle the message was addressed to:
+
+```
+python /run/this.py {{to}}     →     python /run/this.py '+447833222222'
+```
+
+That's the whole template language. Everything else your script might want comes from where it's run and what's in the environment:
+
+| | |
+|---|---|
+| working directory | the message's archive folder, so `message.json` is just `./message.json` |
+| `$IMSG_ARCHIVE_DIR` | the same folder, absolute |
+| `$IMSG_TO` | same value as `{{to}}` |
+| `$IMSG_MESSAGE_ID` | the `rowID` |
+
+Deciding what to do is the script's job — read the directory, look at `message.json`, ignore what doesn't matter.
+
+Details worth knowing:
+
+- **The handle is passed as one argument, always.** `{{to}}` is substituted single-quoted, so a handle containing spaces, quotes, or `;` is an argument and never code. Your command template is the only part of the string the shell parses.
+- **`{{to}}` is the raw handle** (`+447833222222`), not the filesystem-safe folder name (`447833222222`). Use `$IMSG_ARCHIVE_DIR` rather than rebuilding the path from the handle.
+- **It only runs if archiving succeeded.** No directory, no command.
+- **One at a time.** A busy group thread or a backfill won't spawn a shell per message; they queue in arrival order, so two runs never race on the same tree.
+- **Killed after 120 seconds** (`SIGTERM`, then `SIGKILL`), because a script that never exits would otherwise stall every message behind it.
+- **stdout goes to Console, not to anyone's phone.** `log stream --predicate 'subsystem == "com.imsg-relay.app" AND category == "exec"'`.
+- **Inbound messages only.** The archive still mirrors messages you sent; the command doesn't run for them. Otherwise a script that replies would trigger itself on its own reply, which is a loop with a shell in it.
+- **It inherits this app's privileges**, including Full Disk Access. That's a wider blast radius than a script you launch from a terminal.
 
 ### Sender filter
 
@@ -579,6 +609,7 @@ Click the menu bar icon → **Settings…** and fill in:
 | Outbound | **Save messages locally** | off | Mirrors every inbound message to disk under the path below, in addition to relaying over HTTP. |
 | Outbound | **Archive path** | (empty) | Root folder for the local archive. Each message gets `<path>/<rowID>/message.json`, `MESSAGE.txt`, and `attachments/`. Pick button opens NSOpenPanel. |
 | Outbound | **Group by recipient** | off | When on, buckets the archive by the handle the message was addressed to (`destination_caller_id`): `<path>/<recipient>/<rowID>/`. Recipient is normalized to a filesystem-safe name (phone → digits only, email → lowercased with `@`/`.` replaced by `_`); falls back to `unknown` when the destination handle is missing. |
+| Outbound | **Execute command** | (empty) | Shell command run after an *inbound* message is archived, with `{{to}}` replaced by the recipient handle as a single quoted argument. Runs in the message's archive folder, one at a time, killed after 120s. Empty means no command. |
 | Outbound → Advanced | **Only from these handles** | (empty) | Whitelist: if non-empty, only these senders are processed. One per line, phone numbers normalized to digits, emails lowercased. |
 | Outbound → Advanced | **Never from these handles** | (empty) | Blacklist: messages from these senders are silently dropped. Ignored when whitelist is non-empty. |
 | Inbound | **Bearer token** | (empty) | Sent as `Authorization: Bearer <token>` on outbound webhook POSTs *and* required on incoming local API / MCP / attachment calls. One secret, both directions. Leave blank for dev. |
