@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.2.0] — 2026-09-10
 
 ### Added
 
@@ -33,6 +33,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself on its own reply.
 
 ### Fixed
+
+- **Auto-updates were never offered.** Releases 0.1.2, 0.1.3 and 0.1.4 all
+  advertised `<sparkle:version>3</sparkle:version>` in the appcast, read from
+  a `CFBundleVersion` in `src/Info.plist` that nobody bumped, while the apps
+  themselves were stamped with the commit count (0.1.4 shipped as build 44).
+  Sparkle compares the feed's number against the installed app's, saw 3
+  against 44, and told every user they were already current. The appcast job
+  now reads the version, build number, minimum system version and Sparkle
+  public key back out of the signed artifact, and fails the release if the
+  bundle disagrees with the tag or with the signing key. **Updating from
+  0.1.4 or earlier needs one manual download**; after that the updater works.
+
+- **Intel Macs were offered a build they can't run.** The feed's single
+  enclosure pointed at `imsg-relay-arm64.zip`, under a comment asserting that
+  Sparkle picks a matching slice. It doesn't — the appcast has no notion of
+  architecture, and there was no universal binary to pick from. Releases are
+  now one universal build (`imsg-relay-universal.zip`), with both slices
+  verified in the app, the bundled `cloudflared` and Sparkle itself before
+  publishing. Rosetta was never a fallback here: it translates x86_64 on
+  Apple Silicon, never arm64 on Intel.
+
+- **The appcast advertised macOS 13 support for an app that requires 14.**
+  `minimumSystemVersion` was a hardcoded default one major version below
+  `LSMinimumSystemVersion`, so Sparkle would offer the update to a Mac that
+  couldn't launch it. It now comes from the app being published.
+
+- **A local build with no tags claimed to be version 0.1.0.** The bundler fell
+  back to `git describe`, then to a hardcoded literal that went stale the
+  moment 0.1.1 shipped. It now takes the version from `APP_VERSION`, else the
+  baseline in `src/Info.plist`, else it fails. It also refuses to build from a
+  shallow clone, where the commit count would understate `CFBundleVersion` and
+  turn the release into a downgrade.
 
 - **`SIGTERM` left half an app running.** The local API runs on Hummingbird,
   whose service lifecycle traps `SIGTERM` and gracefully stops the HTTP

@@ -17,9 +17,13 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.2</string>
+    <string>0.2.0</string>
+    <!-- The highest CFBundleVersion published so far, used by
+         create-app-bundle.sh as a floor: releases stamp the commit count, and
+         a number below this one would make Sparkle read the release as a
+         downgrade and offer nothing. v0.1.4 was cut at commit 44. -->
     <key>CFBundleVersion</key>
-    <string>3</string>
+    <string>44</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>

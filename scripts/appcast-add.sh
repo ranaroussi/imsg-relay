@@ -9,12 +9,13 @@
 #
 # Usage:
 #   scripts/appcast-add.sh \
-#     --zip imsg-relay-arm64.zip \
-#     --version 0.1.0 \
-#     --build 42 \
-#     --download-url https://github.com/ranaroussi/imsg-relay/releases/download/v0.1.0/imsg-relay-arm64.zip \
-#     --min-system 13.0 \
-#     --notes-url https://github.com/ranaroussi/imsg-relay/releases/tag/v0.1.0
+#     --zip imsg-relay-universal.zip \
+#     --version 0.2.0 \
+#     --build 49 \
+#     --download-url https://github.com/ranaroussi/imsg-relay/releases/download/v0.2.0/imsg-relay-universal.zip \
+#     --notes-url https://github.com/ranaroussi/imsg-relay/releases/tag/v0.2.0
+#
+# --min-system defaults to the app's own LSMinimumSystemVersion.
 #
 # Reads the EdDSA private key from $SPARKLE_ED_PRIVATE_KEY (env), or
 # from --private-key <path> if you'd rather pass a file.
@@ -28,7 +29,13 @@ zip_path=""
 version=""
 build_number=""
 download_url=""
-min_system="13.0"
+# Sparkle refuses to offer an update to a Mac below this version, which is the
+# only thing standing between a macOS 13 user and a download that cannot
+# launch. Derive it from the app itself rather than repeating a literal here:
+# a hardcoded default silently goes stale the moment the deployment target
+# moves, and the 13.0 that used to sit here was already one major version
+# below LSMinimumSystemVersion — every item in the feed advertises it.
+min_system="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$PROJECT_DIR/src/Info.plist" 2>/dev/null || echo '14.0')"
 notes_url=""
 private_key_path=""
 

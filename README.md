@@ -85,9 +85,7 @@ Send yourself a message from another device — it appears in the webhook receiv
 
 ### From a release
 
-1. Download the right DMG for your Mac from [Releases](https://github.com/ranaroussi/imsg-relay/releases):
-   - `imsg-relay-arm64.dmg` — Apple Silicon (M1/M2/M3/M4)
-   - `imsg-relay-x86_64.dmg` — Intel
+1. Download `imsg-relay-universal.dmg` from [Releases](https://github.com/ranaroussi/imsg-relay/releases). One build runs on both Apple Silicon and Intel.
 2. Mount the DMG and drag **iMessage Relay** to your **Applications** folder.
 3. Launch it. The menu bar icon appears in the top-right.
 4. On first launch you'll be prompted to grant **Full Disk Access** — required to read `chat.db`. Click *Open Privacy Settings*, drag the app into the list, flip the toggle on. The relay auto-resumes the moment macOS grants access (no need to click *Try Again*).

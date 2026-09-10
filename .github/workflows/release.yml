@@ -11,21 +11,16 @@ permissions:
 
 jobs:
   build:
-    name: Build (${{ matrix.arch }})
-    # macos-15 ships Xcode 16.4 (Swift 6.1) by default — needed for
-    # SQLite.swift >= 0.15.5 which uses swift-tools-version: 6.1.0.
-    # macos-14 only has up to Xcode 16.2 (Swift 6.0) and is being
-    # deprecated in late 2026 anyway, so we may as well jump now.
+    name: Build (universal)
+    # macos-15 defaults to Xcode 16.4 (Swift 6.1) but carries 26.x alongside
+    # it, which the next step selects. macos-14 tops out at Xcode 16.2 and is
+    # deprecated in late 2026 anyway.
+    #
+    # One job, not an arch matrix: create-app-bundle.sh cross-compiles both
+    # slices and lipos them into a single universal bundle. Sparkle's appcast
+    # has no architecture filtering, so shipping one artifact is the only way
+    # both Apple Silicon and Intel users can auto-update from one <enclosure>.
     runs-on: macos-15
-    strategy:
-      matrix:
-        include:
-          - arch: arm64
-            swift_arch: arm64
-            cloudflared_asset: cloudflared-darwin-arm64.tgz
-          - arch: x86_64
-            swift_arch: x86_64
-            cloudflared_asset: cloudflared-darwin-amd64.tgz
 
     steps:
       - name: Checkout
@@ -33,27 +28,31 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Select Xcode 16.x (Swift 6 toolchain)
-        # Package.swift declares swift-tools-version: 6.0 — needs Xcode
-        # 16.x. The macos-14 runner image's default is Xcode 15.4
-        # (Swift 5.10), which trips `error: package is using Swift
-        # tools version 6.0.0 but the installed version is 5.10.0`.
+      - name: Select Xcode 26.x (must match the toolchain releases are developed on)
+        # Not the runner default (16.4 / Swift 6.1) and not "whatever is
+        # newest". Both are wrong for a release path:
         #
-        # Pick the highest Xcode_16* present so we ride the runner
-        # image's upgrades automatically (today 16.2; tomorrow 16.3+).
-        # macOS 14 runners are deprecating in late 2026 — at some
-        # point we'll want to switch runs-on to macos-15, which ships
-        # 16.x natively.
+        # A toolchain *older* than the maintainer's rejects code that compiles
+        # fine locally, and the failure surfaces only after a tag is pushed.
+        # machook lost its first v0.1.0 tag to exactly that — a switch over an
+        # Optional<Bool> that is exhaustive from Swift 6.2 but not 6.1.
+        #
+        # "Newest available" is no better: the images carry Xcode previews, and
+        # a release should never be the first thing to try one.
+        #
+        # So pin the major and let patch releases through. Bump this when the
+        # local Xcode moves — the runner image tracks the same builds (26.3
+        # 17C529 as of this writing).
         run: |
           xcode_path=""
-          for candidate in $(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -rV); do
+          for candidate in $(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -rV); do
             if [ -d "$candidate" ]; then
               xcode_path="$candidate"
               break
             fi
           done
           if [ -z "$xcode_path" ]; then
-            echo "::error::No Xcode 16.x found on the runner. Available Xcodes:"
+            echo "::error::No Xcode 26.x found on the runner. Available Xcodes:"
             ls -d /Applications/Xcode*.app 2>/dev/null || echo "(none)"
             exit 1
           fi
@@ -79,46 +78,49 @@ jobs:
           if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ]; then
             VERSION="0.0.0-dev"
           fi
-          BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' src/Info.plist)"
-          echo "version=$VERSION"             >> "$GITHUB_OUTPUT"
-          echo "build_number=$BUILD_NUMBER"   >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Download cloudflared
-        run: |
-          # Cloudflare ships macOS cloudflared as a .tgz archive
-          # containing a single `cloudflared` binary at the root.
-          # The bare-binary asset they used to publish at
-          # `cloudflared-darwin-{arm64,amd64}` no longer exists —
-          # downloading it 404s.
-          mkdir -p src/Sources/Resources
-          tmp="$(mktemp -d)"
-          curl -fSL --retry 3 --retry-delay 5 \
-            "https://github.com/cloudflare/cloudflared/releases/latest/download/${{ matrix.cloudflared_asset }}" \
-            -o "$tmp/cloudflared.tgz"
-          tar -xzf "$tmp/cloudflared.tgz" -C "$tmp"
-          # Locate the extracted binary (top-level filename varies between
-          # `cloudflared` and `cloudflared-darwin-<arch>` across releases).
-          extracted="$(find "$tmp" -maxdepth 2 -type f -name 'cloudflared*' ! -name '*.tgz' | head -n1)"
-          if [ -z "$extracted" ]; then
-            echo "::error::Couldn't find cloudflared binary inside $tmp after extraction"
-            ls -la "$tmp"
-            exit 1
-          fi
-          cp "$extracted" src/Sources/Resources/cloudflared
-          chmod +x src/Sources/Resources/cloudflared
-          rm -rf "$tmp"
-          file src/Sources/Resources/cloudflared
-          src/Sources/Resources/cloudflared --version
+      # cloudflared is fetched by create-app-bundle.sh, which downloads both
+      # macOS slices and lipos them. Doing it there rather than here keeps one
+      # implementation for CI and local builds, and the bundler is the only
+      # place that knows how many architectures this build has to cover.
 
-      - name: Build .app bundle
+      - name: Build universal .app bundle
         env:
           CODESIGN_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
           APP_VERSION: ${{ steps.version.outputs.version }}
-          TARGET_ARCH: ${{ matrix.swift_arch }}
+          TARGET_ARCH: universal
           SPARKLE_ED_PUBLIC_KEY: ${{ secrets.SPARKLE_ED_PUBLIC_KEY }}
         run: |
           chmod +x create-app-bundle.sh
           ./create-app-bundle.sh
+
+      - name: Verify universal slices
+        # create-app-bundle.sh already fails on a thin binary; this repeats the
+        # check as a release gate so a regression in the bundler can't quietly
+        # ship a half-architecture build.
+        run: |
+          fail=0
+          for bin in \
+            "iMessage Relay.app/Contents/MacOS/ImsgRelay" \
+            "iMessage Relay.app/Contents/Resources/cloudflared" \
+            "iMessage Relay.app/Contents/Frameworks/Sparkle.framework/Versions/Current/Sparkle"
+          do
+            if [ ! -f "$bin" ]; then
+              echo "::error::missing binary: $bin"; fail=1; continue
+            fi
+            archs="$(lipo -archs "$bin" 2>/dev/null || echo unknown)"
+            echo "$bin → $archs"
+            case "$archs" in
+              *arm64*) ;;
+              *) echo "::error::$bin is missing the arm64 slice ($archs)"; fail=1 ;;
+            esac
+            case "$archs" in
+              *x86_64*) ;;
+              *) echo "::error::$bin is missing the x86_64 slice ($archs)"; fail=1 ;;
+            esac
+          done
+          exit $fail
 
       - name: Verify code signature (best effort)
         run: |
@@ -143,9 +145,11 @@ jobs:
           rm imsg-relay-notarize.zip
 
       - name: Package ZIP
+        # This ZIP is both the download link and the Sparkle enclosure, so its
+        # name is referenced by the appcast job below.
         run: |
-          ditto -c -k --sequesterRsrc --keepParent "iMessage Relay.app" "imsg-relay-${{ matrix.arch }}.zip"
-          shasum -a 256 "imsg-relay-${{ matrix.arch }}.zip" > "imsg-relay-${{ matrix.arch }}.zip.sha256"
+          ditto -c -k --sequesterRsrc --keepParent "iMessage Relay.app" "imsg-relay-universal.zip"
+          shasum -a 256 "imsg-relay-universal.zip" > "imsg-relay-universal.zip.sha256"
 
       - name: Package DMG
         run: |
@@ -158,21 +162,21 @@ jobs:
             --icon "iMessage Relay.app" 175 120 \
             --hide-extension "iMessage Relay.app" \
             --app-drop-link 425 120 \
-            "imsg-relay-${{ matrix.arch }}.dmg" \
+            "imsg-relay-universal.dmg" \
             "iMessage Relay.app" || true
-          if [ -f "imsg-relay-${{ matrix.arch }}.dmg" ]; then
-            shasum -a 256 "imsg-relay-${{ matrix.arch }}.dmg" > "imsg-relay-${{ matrix.arch }}.dmg.sha256"
+          if [ -f "imsg-relay-universal.dmg" ]; then
+            shasum -a 256 "imsg-relay-universal.dmg" > "imsg-relay-universal.dmg.sha256"
           fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: imsg-relay-${{ matrix.arch }}
+          name: imsg-relay-universal
           path: |
-            imsg-relay-${{ matrix.arch }}.zip
-            imsg-relay-${{ matrix.arch }}.zip.sha256
-            imsg-relay-${{ matrix.arch }}.dmg
-            imsg-relay-${{ matrix.arch }}.dmg.sha256
+            imsg-relay-universal.zip
+            imsg-relay-universal.zip.sha256
+            imsg-relay-universal.dmg
+            imsg-relay-universal.dmg.sha256
           retention-days: 7
 
   release:
@@ -209,10 +213,8 @@ jobs:
 
             ### Downloads
 
-            | Architecture | DMG | ZIP |
-            |--------------|-----|-----|
-            | Apple Silicon (M1/M2/M3/M4) | `imsg-relay-arm64.dmg` | `imsg-relay-arm64.zip` |
-            | Intel (x86_64)              | `imsg-relay-x86_64.dmg` | `imsg-relay-x86_64.zip` |
+            One universal build for both Apple Silicon and Intel:
+            `imsg-relay-universal.dmg` or `imsg-relay-universal.zip`.
 
             ### Install
 
@@ -225,7 +227,7 @@ jobs:
             ### Verification
 
             ```bash
-            shasum -a 256 -c imsg-relay-arm64.zip.sha256
+            shasum -a 256 -c imsg-relay-universal.zip.sha256
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -244,6 +246,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     env:
       SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+      SPARKLE_ED_PUBLIC_KEY: ${{ secrets.SPARKLE_ED_PUBLIC_KEY }}
     steps:
       - name: Verify Sparkle private key is configured
         run: |
@@ -267,41 +270,113 @@ jobs:
         with:
           path: artifacts
 
-      - name: Resolve version + build number
+      - name: Read version out of the built app
         id: meta
+        # Read the versions from the ZIP we are about to sign, never from
+        # src/Info.plist. Sparkle checks the appcast's <sparkle:version>
+        # against the installed app's CFBundleVersion, so if those two are
+        # derived from different places they drift and the updater concludes
+        # every user is already up to date. That is exactly what shipped:
+        # 0.1.2, 0.1.3 and 0.1.4 all advertised build 3 from this file while
+        # the apps themselves carried the commit count (0.1.4 was build 47),
+        # so no installed copy was ever offered an update. Describing the
+        # artifact makes that class of bug impossible.
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' src/Info.plist)"
-          echo "version=$VERSION"             >> "$GITHUB_OUTPUT"
-          echo "build_number=$BUILD_NUMBER"   >> "$GITHUB_OUTPUT"
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          ZIP="$(find artifacts -name 'imsg-relay-universal.zip' | head -1)"
+          if [ -z "$ZIP" ]; then
+            echo "::error::imsg-relay-universal.zip not found in artifacts."
+            find artifacts -type f | head -20
+            exit 1
+          fi
+
+          workdir="$(mktemp -d)"
+          ditto -x -k "$ZIP" "$workdir"
+          plist="$workdir/iMessage Relay.app/Contents/Info.plist"
+          if [ ! -f "$plist" ]; then
+            echo "::error::no iMessage Relay.app/Contents/Info.plist inside $ZIP"
+            find "$workdir" -maxdepth 2 | head -20
+            exit 1
+          fi
+
+          SHORT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
+          BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")"
+          MIN_SYSTEM="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")"
+          echo "tag=$TAG_VERSION  bundle short=$SHORT_VERSION  CFBundleVersion=$BUILD_NUMBER  min system=$MIN_SYSTEM"
+
+          if [ "$SHORT_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::tag v$TAG_VERSION but the bundle says $SHORT_VERSION — the version never reached create-app-bundle.sh."
+            exit 1
+          fi
+
+          # The app can only install an update whose signature verifies against
+          # the key baked into the copy already on disk. If the shipped key and
+          # the signing key ever drift apart, every download is rejected at the
+          # last moment with nothing in the release log to explain it — so
+          # compare them here, while we can still fail the release instead.
+          SHIPPED_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$plist" 2>/dev/null || echo '')"
+          if [ -z "$SHIPPED_KEY" ]; then
+            echo "::error::the built app has no SUPublicEDKey — it could never verify an update."
+            exit 1
+          fi
+          if [ -n "$SPARKLE_ED_PUBLIC_KEY" ] && [ "$SHIPPED_KEY" != "$SPARKLE_ED_PUBLIC_KEY" ]; then
+            echo "::error::the app ships a different Sparkle public key than the SPARKLE_ED_PUBLIC_KEY secret."
+            echo "::error::src/Info.plist and the repository secrets disagree; updates signed here would be rejected."
+            exit 1
+          fi
+
+          echo "version=$SHORT_VERSION"      >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER"  >> "$GITHUB_OUTPUT"
+          echo "min_system=$MIN_SYSTEM"      >> "$GITHUB_OUTPUT"
+          echo "zip=$ZIP"                    >> "$GITHUB_OUTPUT"
+
+      - name: Select Xcode 26.x (same toolchain as the build job)
+        # This job compiles the package too, so it needs the same compiler as
+        # the build job. On the runner default it would fail on code the build
+        # job accepted — after the release is already published, leaving a
+        # release with no appcast entry and therefore no way to auto-update to.
+        run: |
+          xcode_path=""
+          for candidate in $(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -rV); do
+            if [ -d "$candidate" ]; then
+              xcode_path="$candidate"
+              break
+            fi
+          done
+          if [ -z "$xcode_path" ]; then
+            echo "::error::No Xcode 26.x found on the runner. Available Xcodes:"
+            ls -d /Applications/Xcode*.app 2>/dev/null || echo "(none)"
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode_path"
+          echo "Selected: $xcode_path"
 
       - name: Build Sparkle helpers (need sign_update binary)
         run: |
           cd src && swift build -c release --product ImsgRelay
           # The build produces Sparkle's bundle with sign_update inside.
 
-      - name: Append both arches to appcast.xml
+      - name: Append release to appcast.xml
         run: |
-          ARM_ZIP="$(find artifacts -name 'imsg-relay-arm64.zip' | head -1)"
-          INTEL_ZIP="$(find artifacts -name 'imsg-relay-x86_64.zip' | head -1)"
+          # Sparkle's <enclosure> is one-per-channel with no architecture
+          # filtering, which is exactly why the build job ships a single
+          # universal ZIP: this one URL is correct for every Mac that can run
+          # the app. Until 0.1.4 this pushed the arm64 build under a comment
+          # claiming Sparkle would pick a matching slice — it does not, and
+          # there was no universal binary to pick from. The signature is
+          # computed over the same ZIP that gets published, so the file
+          # Sparkle downloads is byte-identical to the release asset.
+          ZIP="${{ steps.meta.outputs.zip }}"
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
           NOTES_URL="https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
 
-          if [ -n "$ARM_ZIP" ]; then
-            ./scripts/appcast-add.sh \
-              --zip "$ARM_ZIP" \
-              --version "${{ steps.meta.outputs.version }}" \
-              --build "${{ steps.meta.outputs.build_number }}" \
-              --download-url "$BASE_URL/imsg-relay-arm64.zip" \
-              --notes-url "$NOTES_URL"
-          fi
-
-          # NOTE: Sparkle's <item> is one-per-channel, not one-per-arch.
-          # We only push the ARM64 entry — Intel users get the universal
-          # binary via the same enclosure URL (Sparkle picks the
-          # matching slice). If we ever ship truly arch-specific
-          # binaries we'd publish two channels with sparkle:channel
-          # filters; not needed at v0.
+          ./scripts/appcast-add.sh \
+            --zip "$ZIP" \
+            --version "${{ steps.meta.outputs.version }}" \
+            --build "${{ steps.meta.outputs.build_number }}" \
+            --min-system "${{ steps.meta.outputs.min_system }}" \
+            --download-url "$BASE_URL/imsg-relay-universal.zip" \
+            --notes-url "$NOTES_URL"
 
       - name: Commit + push appcast.xml
         run: |

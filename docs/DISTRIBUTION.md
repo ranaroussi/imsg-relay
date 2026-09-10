@@ -81,14 +81,16 @@ git push origin v0.2.0
 
 That's it. The workflow at `.github/workflows/release.yml` then:
 
-1. Builds the arm64 + x86_64 `.app` bundles (matrix job).
+1. Builds one universal `.app` bundle — both slices compiled and `lipo`'d together, because Sparkle's appcast can't filter by architecture and a per-arch enclosure hands half the user base a binary their Mac can't run.
 2. Imports the Developer ID cert.
 3. Injects `SPARKLE_ED_PUBLIC_KEY` into `Info.plist` and `CFBundleShortVersionString` from the tag.
 4. Code-signs the bundle (Sparkle XPC services, cloudflared, the main binary, the outer `.app`).
 5. Notarizes via `xcrun notarytool submit --wait`, then `xcrun stapler staple`.
 6. Packages `.zip` and `.dmg`, generates `.sha256` checksums.
 7. Uploads everything as a GitHub release attached to the tag.
-8. (`appcast` job) Signs the release ZIP with the EdDSA private key via Sparkle's `sign_update`, prepends a fresh `<item>` block to `appcast.xml`, commits and pushes to `main`.
+8. (`appcast` job) Unzips the published artifact and reads `CFBundleShortVersionString`, `CFBundleVersion`, `LSMinimumSystemVersion` and `SUPublicEDKey` straight out of it, failing the job if the bundle's version doesn't match the tag or its Sparkle key doesn't match the signing secret. Then signs that same ZIP with the EdDSA private key via Sparkle's `sign_update`, prepends a fresh `<item>` block to `appcast.xml`, commits and pushes to `main`.
+
+   The version numbers are read back out of the artifact rather than from `src/Info.plist` on purpose. Sparkle compares the feed's `<sparkle:version>` against the *installed* app's `CFBundleVersion`, so the two must come from the same place: 0.1.2 through 0.1.4 advertised build `3` from the checked-in plist while the apps carried the commit count, and no installed copy was ever offered an update.
 
 Existing installs poll `appcast.xml` once a day (see `SUScheduledCheckInterval`) and on the next poll see the new version, prompt the user, download, verify the EdDSA signature, and install.
 
@@ -111,8 +113,7 @@ After publishing, before you tell anyone, smoke-test the released artifact yours
 
 ```bash
 # Pull the artifact from the release page
-ARCH=arm64       # or x86_64
-ZIP_URL="https://github.com/ranaroussi/imsg-relay/releases/download/v0.2.0/imsg-relay-${ARCH}.zip"
+ZIP_URL="https://github.com/ranaroussi/imsg-relay/releases/download/v0.2.0/imsg-relay-universal.zip"
 curl -fL "$ZIP_URL" -o /tmp/imsg-relay.zip
 curl -fL "$ZIP_URL.sha256" -o /tmp/imsg-relay.zip.sha256
 
@@ -124,6 +125,16 @@ unzip -q imsg-relay.zip
 codesign --verify --deep --strict --verbose=2 "iMessage Relay.app"
 spctl -a -vvv -t install "iMessage Relay.app"
 # Expected: accepted, source=Notarized Developer ID
+
+# Both slices present, in the app and in the cloudflared it ships
+lipo -archs "iMessage Relay.app/Contents/MacOS/ImsgRelay"
+lipo -archs "iMessage Relay.app/Contents/Resources/cloudflared"
+# Expected: x86_64 arm64
+
+# The build number the feed advertises has to be this one, and above the
+# previous release's — that is what Sparkle compares against.
+/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+  "iMessage Relay.app/Contents/Info.plist"
 ```
 
 If Gatekeeper says `rejected`, the notarization step probably timed out — check the workflow run logs and re-run that job.
